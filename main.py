@@ -340,7 +340,7 @@ class FlowerApp:
         scrollbar = ttk.Scrollbar(list_frame)
         scrollbar.pack(side='right', fill='y')
         
-        flowers_list = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, width=40)
+        flowers_list = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, width=40, exportselection=False)
         flowers_list.pack(side='left', fill='both', expand=True)
         scrollbar.config(command=flowers_list.yview)
         
@@ -409,6 +409,55 @@ class FlowerApp:
                 refresh_list()
         
         ttk.Button(controls_frame, text="Remove Selected (1)", command=remove_flower_action).pack(fill='x', pady=5)
+        
+        # Edit Quantity Section
+        edit_frame = ttk.LabelFrame(controls_frame, text="Edit Quantity")
+        edit_frame.pack(fill='x', pady=5)
+        
+        edit_qty_spin = ttk.Spinbox(edit_frame, from_=1, to=100, width=5)
+        edit_qty_spin.pack(side='left', padx=5, pady=5)
+        
+        def update_quantity():
+            selection = flowers_list.curselection()
+            if not selection:
+                messagebox.showwarning("Warning", "Please select a flower to update.")
+                return
+            
+            idx = selection[0]
+            flower = current_display_items[idx]
+            
+            try:
+                new_qty = int(edit_qty_spin.get())
+            except ValueError:
+                messagebox.showwarning("Warning", "Invalid quantity.")
+                return
+                
+            if new_qty < 1:
+                messagebox.showwarning("Warning", "Quantity must be at least 1.")
+                return
+
+            current_counts = bouquet.flower_count()
+            current_qty = current_counts.get(flower, 0)
+            
+            if new_qty > current_qty:
+                bouquet.select_flower(flower, count=new_qty - current_qty)
+            elif new_qty < current_qty:
+                bouquet.remove_flower(flower, count=current_qty - new_qty)
+            
+            refresh_list()
+            
+        ttk.Button(edit_frame, text="Update", command=update_quantity).pack(side='left', fill='x', expand=True, padx=5, pady=5)
+
+        def on_flower_select(event):
+            selection = flowers_list.curselection()
+            if selection:
+                idx = selection[0]
+                flower = current_display_items[idx]
+                counts = bouquet.flower_count()
+                qty = counts.get(flower, 0)
+                edit_qty_spin.set(qty)
+        
+        flowers_list.bind('<<ListboxSelect>>', on_flower_select)
         
         def save_bouquet():
             bouquet.save()

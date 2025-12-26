@@ -27,7 +27,7 @@ class Bouquet:
                 return
         
         if based_on:
-            self.name = f"{based_on} - {name}"
+            self.name = f"{name} (based on {based_on})"
             # find the based_on bouquet and copy its flowers
             if based_on in all_bouquets:
                 self.flowers = all_bouquets[based_on]
