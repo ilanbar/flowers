@@ -1,0 +1,14 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Ensure Environment",
+            "type": "shell",
+            "command": "if (-not (Test-Path .venv)) { .\\setup.ps1 }",
+            "windows": {
+                "command": "if (-not (Test-Path .venv)) { .\\setup.ps1 }"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
