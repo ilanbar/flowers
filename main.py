@@ -14,7 +14,12 @@ class FlowerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Flower Shop Manager")
-        self.root.geometry("700x500")
+        
+        # Increase font size
+        default_font = ('Helvetica', 12)
+        self.root.option_add('*Font', default_font)
+        style = ttk.Style()
+        style.configure('.', font=default_font)
         
         self.flower_types = FlowersTypes()
         self.flower_colors = FlowerColors()
