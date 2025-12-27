@@ -177,6 +177,7 @@ class FlowerApp:
         
         self.flowers_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set)
         self.flowers_listbox.pack(side='left', expand=True, fill='both')
+        self.flowers_listbox.bind('<Double-1>', self.open_flower_editor)
         scrollbar.config(command=self.flowers_listbox.yview)
         
         self.refresh_flowers_list()
@@ -194,6 +195,66 @@ class FlowerApp:
         
         del_btn = ttk.Button(controls, text="Delete", command=self.delete_flower)
         del_btn.pack(side='left', padx=5)
+
+    def open_flower_editor(self, event):
+        selection = self.flowers_listbox.curselection()
+        if not selection:
+            return
+        name = self.flowers_listbox.get(selection[0])
+        
+        editor = tk.Toplevel(self.root)
+        editor.title(f"Edit Flower: {name}")
+        editor.geometry("400x500")
+        
+        config = self.flower_types.get_config(name)
+        current_colors = set(config.get('colors', []))
+        current_sizes = set(config.get('sizes', []))
+        
+        # Colors
+        color_frame = ttk.LabelFrame(editor, text="Allowed Colors")
+        color_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        color_listbox = tk.Listbox(color_frame, selectmode=tk.MULTIPLE, exportselection=False)
+        color_listbox.pack(fill='both', expand=True)
+        
+        all_colors = sorted(self.flower_colors.colors)
+        for i, c in enumerate(all_colors):
+            color_listbox.insert(tk.END, c)
+            # If empty, select all (default)
+            if not current_colors or c in current_colors:
+                color_listbox.selection_set(i)
+        
+        # Sizes
+        size_frame = ttk.LabelFrame(editor, text="Allowed Sizes")
+        size_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        size_listbox = tk.Listbox(size_frame, selectmode=tk.MULTIPLE, exportselection=False)
+        size_listbox.pack(fill='both', expand=True)
+        
+        all_sizes = self.flower_sizes.sizes
+        for i, s in enumerate(all_sizes):
+            size_listbox.insert(tk.END, s)
+            # If empty, select all (default)
+            if not current_sizes or s in current_sizes:
+                size_listbox.selection_set(i)
+                
+        def save_config():
+            selected_colors = [color_listbox.get(i) for i in color_listbox.curselection()]
+            selected_sizes = [size_listbox.get(i) for i in size_listbox.curselection()]
+            
+            # If user selected ALL, maybe save as empty to mean "All"? 
+            # Or save explicit list. Explicit list is better for "specific" requirement.
+            # But if I save explicit list, and then add a NEW color globally, it won't appear here.
+            # If I save empty, it means "All", so new colors appear automatically.
+            # Let's check if ALL are selected.
+            
+            # Actually, user wants to "specify". So explicit is better.
+            
+            self.flower_types.update_config(name, selected_colors, selected_sizes)
+            messagebox.showinfo("Success", f"Updated configuration for {name}")
+            editor.destroy()
+            
+        ttk.Button(editor, text="Save", command=save_config).pack(pady=10)
 
     def refresh_flowers_list(self):
         self.flowers_listbox.delete(0, tk.END)
@@ -446,6 +507,27 @@ class FlowerApp:
         size_combo = ttk.Combobox(add_frame, values=self.flower_sizes.sizes, state="readonly")
         size_combo.pack(fill='x', padx=5, pady=2)
         
+        def update_add_combos(event=None):
+            f_name = type_combo.get()
+            if not f_name: return
+            
+            config = self.flower_types.get_config(f_name)
+            valid_colors = config.get('colors', [])
+            valid_sizes = config.get('sizes', [])
+            
+            if not valid_colors: valid_colors = sorted(self.flower_colors.colors)
+            else: valid_colors = [c for c in valid_colors if c in self.flower_colors.colors]
+            
+            if not valid_sizes: valid_sizes = self.flower_sizes.sizes
+            
+            color_combo['values'] = valid_colors
+            size_combo['values'] = valid_sizes
+            
+            color_combo.set('')
+            size_combo.set('')
+            
+        type_combo.bind('<<ComboboxSelected>>', update_add_combos)
+        
         ttk.Label(add_frame, text="Count:").pack(anchor='w', padx=5)
         count_spin = ttk.Spinbox(add_frame, from_=1, to=100, width=5)
         count_spin.set(1)
@@ -573,6 +655,19 @@ class FlowerApp:
                 counts = bouquet.flower_count()
                 qty = counts.get(flower, 0)
                 edit_qty_spin.set(qty)
+                
+                # Update values based on flower type
+                config = self.flower_types.get_config(flower.name)
+                valid_colors = config.get('colors', [])
+                valid_sizes = config.get('sizes', [])
+                
+                if not valid_colors: valid_colors = sorted(self.flower_colors.colors)
+                else: valid_colors = [c for c in valid_colors if c in self.flower_colors.colors]
+                
+                if not valid_sizes: valid_sizes = self.flower_sizes.sizes
+                
+                edit_color_combo['values'] = valid_colors
+                edit_size_combo['values'] = valid_sizes
                 
                 # Set combos
                 edit_color_combo.set(flower.color)
@@ -1027,8 +1122,16 @@ class FlowerApp:
         # Generate all combinations of existing flowers, colors, and sizes
         all_combinations = []
         for f_name in sorted(self.flower_types.flowers):
-            for f_color in sorted(self.flower_colors.colors):
-                for f_size in self.flower_sizes.sizes:
+            config = self.flower_types.get_config(f_name)
+            valid_colors = config.get('colors', [])
+            valid_sizes = config.get('sizes', [])
+            
+            if not valid_colors: valid_colors = sorted(self.flower_colors.colors)
+            if not valid_sizes: valid_sizes = self.flower_sizes.sizes
+            
+            for f_color in valid_colors:
+                if f_color not in self.flower_colors.colors: continue
+                for f_size in valid_sizes:
                     all_combinations.append(f"{f_name} - {f_color} - {f_size}")
         
         for flower_key in all_combinations:

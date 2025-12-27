@@ -8,25 +8,39 @@ class FlowersTypes:
     def __init__(self):
         try:
             with open('Flowers.json', 'r', encoding='utf-8') as f:
-                self.flowers = json.load(f)
+                data = json.load(f)
+                if isinstance(data, list):
+                    # Migrate list to dict
+                    self.flowers = {name: {'colors': [], 'sizes': []} for name in data}
+                    self._save()
+                else:
+                    self.flowers = data
         except (FileNotFoundError, json.JSONDecodeError):
-            self.flowers = []
+            self.flowers = {}
             self._save()
 
     def add(self, name):
         # check if flower already exists
         if name not in self.flowers:
-            self.flowers.append(name)
+            self.flowers[name] = {'colors': [], 'sizes': []}
             self._save()
         
     
     def remove(self, name):
         if name in self.flowers:
-            self.flowers.remove(name)
+            del self.flowers[name]
             self._save()
 
     def contains(self, name):
         return name in self.flowers
+
+    def update_config(self, name, colors, sizes):
+        if name in self.flowers:
+            self.flowers[name] = {'colors': colors, 'sizes': sizes}
+            self._save()
+
+    def get_config(self, name):
+        return self.flowers.get(name, {'colors': [], 'sizes': []})
 
     def _save(self):
         with open('Flowers.json', 'w', encoding='utf-8') as f:
