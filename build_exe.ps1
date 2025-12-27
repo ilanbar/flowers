@@ -27,9 +27,18 @@ if (Test-Path dist) {
             Copy-Item $file -Destination "dist" -Force
         }
     }
+
+    # Copy credentials.json for Google Drive Sync
+    if (Test-Path "credentials.json") {
+        Copy-Item "credentials.json" -Destination "dist" -Force
+        Write-Host "Copied credentials.json to dist."
+    } else {
+        Write-Warning "credentials.json not found! Google Drive Sync will not work in the built executable."
+    }
     
     # Also copy legacy JSON files if they exist, just in case
-    Get-ChildItem -Path . -Filter "*.json" | Copy-Item -Destination "dist" -Force
+    # Exclude token.json (session data) and credentials.json (already handled)
+    Get-ChildItem -Path . -Filter "*.json" | Where-Object { $_.Name -ne "token.json" -and $_.Name -ne "credentials.json" } | Copy-Item -Destination "dist" -Force
     
     # Create necessary directories
     New-Item -ItemType Directory -Force -Path "dist\orders"
