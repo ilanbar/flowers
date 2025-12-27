@@ -6,8 +6,12 @@ FlowerData = namedtuple('FlowerData', ['name', 'color', 'size'])
 class FlowersTypes:
 
     def __init__(self):
-        with open('Flowers.json', 'r', encoding='utf-8') as f:
-            self.flowers = json.load(f)
+        try:
+            with open('Flowers.json', 'r', encoding='utf-8') as f:
+                self.flowers = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.flowers = []
+            self._save()
 
     def add(self, name):
         # check if flower already exists
@@ -32,8 +36,12 @@ class FlowersTypes:
 class FlowerColors:
 
     def __init__(self):
-        with open('Colors.json', 'r', encoding='utf-8') as f:
-            self.colors = json.load(f)
+        try:
+            with open('Colors.json', 'r', encoding='utf-8') as f:
+                self.colors = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.colors = []
+            self._save()
 
     def add(self, color):
         if color not in self.colors:

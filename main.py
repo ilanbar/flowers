@@ -7,6 +7,20 @@ import socket
 import sys
 from datetime import datetime
 from collections import defaultdict
+
+# Ensure we are working in the script's/executable's directory
+if getattr(sys, 'frozen', False):
+    # If the application is run as a bundle, the PyInstaller bootloader
+    # extends the sys module by a flag frozen=True and sets the app 
+    # path into variable _MEIPASS'.
+    # However, for persistent data, we want the folder where the EXE is, 
+    # not the temp _MEIPASS folder.
+    application_path = os.path.dirname(sys.executable)
+else:
+    application_path = os.path.dirname(os.path.abspath(__file__))
+
+os.chdir(application_path)
+
 from flower import FlowersTypes, FlowerColors, FlowerSizes, FlowerData
 from bouquet import Bouquet
 
@@ -26,6 +40,10 @@ class FlowerApp:
         self.flower_sizes = FlowerSizes()
         
         self.current_order = []
+        self.current_prices = {} # Store price per flower type
+        self.default_prices = {} # Store default prices
+        self.load_default_prices()
+        
         self.tab_images = [] # Keep references to images
 
         self.create_menu()
@@ -35,10 +53,26 @@ class FlowerApp:
         
         self.create_orders_tab()
         self.create_quantities_tab()
+        self.create_order_pricing_tab()
         self.create_bouquets_tab()
         self.create_flowers_tab()
         self.create_colors_tab()
+        self.create_global_pricing_tab()
         
+    def load_default_prices(self):
+        try:
+            with open("DefaultPricing.json", "r", encoding="utf-8") as f:
+                self.default_prices = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.default_prices = {}
+
+    def save_default_prices(self):
+        try:
+            with open("DefaultPricing.json", "w", encoding="utf-8") as f:
+                json.dump(self.default_prices, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save default prices: {e}")
+
     def create_tab_image(self, color):
         img = tk.PhotoImage(width=20, height=20)
         img.put(color, to=(0, 0, 20, 20))
@@ -483,6 +517,54 @@ class FlowerApp:
             
         ttk.Button(edit_frame, text="Update", command=update_quantity).pack(side='left', fill='x', expand=True, padx=5, pady=5)
 
+        # Edit Details Section
+        edit_details_frame = ttk.LabelFrame(controls_frame, text="Edit Details")
+        edit_details_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(edit_details_frame, text="Color:").pack(anchor='w', padx=5)
+        edit_color_combo = ttk.Combobox(edit_details_frame, values=sorted(self.flower_colors.colors), state="readonly")
+        edit_color_combo.pack(fill='x', padx=5, pady=2)
+        
+        ttk.Label(edit_details_frame, text="Size:").pack(anchor='w', padx=5)
+        edit_size_combo = ttk.Combobox(edit_details_frame, values=self.flower_sizes.sizes, state="readonly")
+        edit_size_combo.pack(fill='x', padx=5, pady=2)
+        
+        def update_details():
+            selection = flowers_list.curselection()
+            if not selection:
+                messagebox.showwarning("Warning", "Please select a flower to update.")
+                return
+            
+            idx = selection[0]
+            old_flower = current_display_items[idx]
+            
+            new_color = edit_color_combo.get()
+            new_size = edit_size_combo.get()
+            
+            if not new_color or not new_size:
+                 messagebox.showwarning("Warning", "Please select Color and Size.")
+                 return
+
+            if new_color == old_flower.color and new_size == old_flower.size:
+                return # No change
+
+            # Create new flower data
+            new_flower = FlowerData(old_flower.name, new_color, new_size)
+            
+            # Get count
+            counts = bouquet.flower_count()
+            count = counts.get(old_flower, 0)
+            
+            # Remove old
+            bouquet.remove_flower(old_flower, count)
+            
+            # Add new
+            bouquet.select_flower(new_flower, count)
+            
+            refresh_list()
+            
+        ttk.Button(edit_details_frame, text="Update Details", command=update_details).pack(fill='x', padx=5, pady=5)
+
         def on_flower_select(event):
             selection = flowers_list.curselection()
             if selection:
@@ -491,6 +573,10 @@ class FlowerApp:
                 counts = bouquet.flower_count()
                 qty = counts.get(flower, 0)
                 edit_qty_spin.set(qty)
+                
+                # Set combos
+                edit_color_combo.set(flower.color)
+                edit_size_combo.set(flower.size)
         
         flowers_list.bind('<<ListboxSelect>>', on_flower_select)
         
@@ -557,6 +643,10 @@ class FlowerApp:
                 self.refresh_order_bouquets()
             elif tab_text == "Quantities":
                 self.refresh_quantities()
+            elif tab_text == "Order Pricing":
+                self.refresh_order_pricing_tab()
+            elif tab_text == "Pricing":
+                self.refresh_global_pricing_tab()
         except:
             pass
 
@@ -656,8 +746,12 @@ class FlowerApp:
                 return
         
         try:
+            data = {
+                "order": self.current_order,
+                "prices": self.current_prices
+            }
             with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(self.current_order, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2)
             # messagebox.showinfo("Success", f"Order saved to '{filepath}'.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save order: {e}")
@@ -703,10 +797,22 @@ class FlowerApp:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                
+                loaded_order = []
+                loaded_prices = {}
+
+                if isinstance(data, list):
+                    # Old format
+                    loaded_order = data
+                elif isinstance(data, dict) and "order" in data:
+                    # New format
+                    loaded_order = data["order"]
+                    loaded_prices = data.get("prices", {})
                     
                 # Validate data format (list of [name, qty])
-                if isinstance(data, list) and all(isinstance(item, list) and len(item) == 2 for item in data):
-                    self.current_order = [tuple(item) for item in data]
+                if isinstance(loaded_order, list) and all(isinstance(item, list) and len(item) == 2 for item in loaded_order):
+                    self.current_order = [tuple(item) for item in loaded_order]
+                    self.current_prices = loaded_prices
                     self.order_listbox.delete(0, tk.END)
                     for name, qty in self.current_order:
                         self.order_listbox.insert(tk.END, f"{name} (x{qty})")
@@ -764,6 +870,192 @@ class FlowerApp:
             self.quantities_listbox.insert(tk.END, f"{flower.name} - {flower.color} - {flower.size}: {count}")
             
         self.total_flowers_label.config(text=f"Total Flowers: {grand_total}")
+
+        self.total_flowers_label.config(text=f"Total Flowers: {grand_total}")
+
+    def create_order_pricing_tab(self):
+        frame = ttk.Frame(self.notebook)
+        img = self.create_tab_image('gold')
+        self.notebook.add(frame, text="Order Pricing", image=img, compound='left')
+        
+        # Header
+        header_frame = ttk.Frame(frame)
+        header_frame.pack(fill='x', padx=5, pady=5)
+        ttk.Label(header_frame, text="Flower", width=40).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="Count", width=10).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="Price per Unit", width=15).pack(side='left', padx=5)
+        
+        # Scrollable Area
+        canvas = tk.Canvas(frame)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        self.order_pricing_scrollable_frame = ttk.Frame(canvas)
+        
+        self.order_pricing_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        canvas.create_window((0, 0), window=self.order_pricing_scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Total Price Label
+        self.total_price_label = ttk.Label(frame, text="Total Price: 0.00", font=('Helvetica', 14, 'bold'))
+        self.total_price_label.pack(pady=10)
+
+    def refresh_order_pricing_tab(self):
+        # Clear existing rows
+        for widget in self.order_pricing_scrollable_frame.winfo_children():
+            widget.destroy()
+            
+        total_flowers = defaultdict(int)
+        
+        # Calculate totals
+        for bouquet_name, qty in self.current_order:
+            try:
+                b = Bouquet(bouquet_name, load_existing=True)
+                counts = b.flower_count()
+                for flower, count in counts.items():
+                    total_count = count * qty
+                    total_flowers[flower] += total_count
+            except Exception as e:
+                print(f"Error loading bouquet {bouquet_name}: {e}")
+        
+        sorted_flowers = sorted(total_flowers.items(), key=lambda x: x[0].name)
+        
+        grand_total_price = 0.0
+        
+        for flower, count in sorted_flowers:
+            flower_key = f"{flower.name} - {flower.color} - {flower.size}"
+            
+            row_frame = ttk.Frame(self.order_pricing_scrollable_frame)
+            row_frame.pack(fill='x', pady=2)
+            
+            ttk.Label(row_frame, text=flower_key, width=40).pack(side='left', padx=5)
+            ttk.Label(row_frame, text=str(count), width=10).pack(side='left', padx=5)
+            
+            price_var = tk.StringVar()
+            
+            # Determine price: Order Specific > Default > 0
+            current_price = 0.0
+            if flower_key in self.current_prices:
+                current_price = self.current_prices[flower_key]
+            elif flower_key in self.default_prices:
+                current_price = self.default_prices[flower_key]
+            
+            price_var.set(str(current_price))
+            grand_total_price += float(current_price) * count
+            
+            entry = ttk.Entry(row_frame, textvariable=price_var, width=15)
+            entry.pack(side='left', padx=5)
+            
+            # Bind trace to update total price and save to current_prices
+            def on_price_change(var, key=flower_key, cnt=count):
+                try:
+                    val = var.get()
+                    if val:
+                        price = float(val)
+                        self.current_prices[key] = price
+                    else:
+                        if key in self.current_prices:
+                            del self.current_prices[key]
+                    self.update_total_price(total_flowers)
+                except ValueError:
+                    pass # Ignore invalid input
+            
+            # Use trace_add instead of trace for newer tkinter, but trace is safer for older
+            price_var.trace("w", lambda name, index, mode, v=price_var, k=flower_key, c=count: on_price_change(v, k, c))
+            
+        self.total_price_label.config(text=f"Total Price: {grand_total_price:.2f}")
+
+    def update_total_price(self, total_flowers):
+        grand_total = 0.0
+        for flower, count in total_flowers.items():
+            flower_key = f"{flower.name} - {flower.color} - {flower.size}"
+            
+            # Priority: Order Specific > Default > 0
+            price = 0.0
+            if flower_key in self.current_prices:
+                price = self.current_prices[flower_key]
+            elif flower_key in self.default_prices:
+                price = self.default_prices[flower_key]
+                
+            grand_total += price * count
+        self.total_price_label.config(text=f"Total Price: {grand_total:.2f}")
+
+    def create_global_pricing_tab(self):
+        frame = ttk.Frame(self.notebook)
+        img = self.create_tab_image('silver')
+        self.notebook.add(frame, text="Pricing", image=img, compound='left')
+        
+        # Header
+        header_frame = ttk.Frame(frame)
+        header_frame.pack(fill='x', padx=5, pady=5)
+        ttk.Label(header_frame, text="Flower", width=40).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="Default Price", width=15).pack(side='left', padx=5)
+        
+        # Scrollable Area
+        canvas = tk.Canvas(frame)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        self.global_pricing_scrollable_frame = ttk.Frame(canvas)
+        
+        self.global_pricing_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        canvas.create_window((0, 0), window=self.global_pricing_scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Save Button
+        ttk.Button(frame, text="Save Default Prices", command=self.save_default_prices).pack(pady=10)
+
+    def refresh_global_pricing_tab(self):
+        # Clear existing rows
+        for widget in self.global_pricing_scrollable_frame.winfo_children():
+            widget.destroy()
+            
+        # Generate all combinations of existing flowers, colors, and sizes
+        all_combinations = []
+        for f_name in sorted(self.flower_types.flowers):
+            for f_color in sorted(self.flower_colors.colors):
+                for f_size in self.flower_sizes.sizes:
+                    all_combinations.append(f"{f_name} - {f_color} - {f_size}")
+        
+        for flower_key in all_combinations:
+            row_frame = ttk.Frame(self.global_pricing_scrollable_frame)
+            row_frame.pack(fill='x', pady=2)
+            
+            ttk.Label(row_frame, text=flower_key, width=40).pack(side='left', padx=5)
+            
+            price_var = tk.StringVar()
+            if flower_key in self.default_prices:
+                price_var.set(str(self.default_prices[flower_key]))
+            
+            entry = ttk.Entry(row_frame, textvariable=price_var, width=15)
+            entry.pack(side='left', padx=5)
+            
+            def on_default_price_change(var, key=flower_key):
+                try:
+                    val = var.get()
+                    if val:
+                        self.default_prices[key] = float(val)
+                    else:
+                        if key in self.default_prices:
+                            del self.default_prices[key]
+                except ValueError:
+                    pass
+            
+            price_var.trace("w", lambda name, index, mode, v=price_var, k=flower_key: on_default_price_change(v, k))
 
 def check_single_instance():
     try:
