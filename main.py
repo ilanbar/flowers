@@ -605,6 +605,10 @@ class FlowerApp:
         self.based_on_combo['values'] = [""] + names
         self.based_on_combo.set("")
 
+        # Also refresh the order tab dropdown if it exists
+        if hasattr(self, 'order_bouquet_combo'):
+            self.refresh_order_bouquets()
+
     def add_bouquet(self):
         name = self.bouquet_name_entry.get().strip()
         based_on = self.based_on_combo.get()
@@ -1004,15 +1008,15 @@ class FlowerApp:
             notebook = event.widget
             selected_tab = notebook.select()
             tab_text = notebook.tab(selected_tab, "text")
-            if tab_text == "Order":
+            if tab_text == "הזמנה":
                 self.refresh_order_bouquets()
-            elif tab_text == "Quantities":
+            elif tab_text == "כמויות":
                 self.refresh_quantities()
-            elif tab_text == "Order Pricing":
+            elif tab_text == "תמחור הזמנה":
                 self.refresh_order_pricing_tab()
-            elif tab_text == "Summary":
+            elif tab_text == "סיכום":
                 self.refresh_summary_tab()
-            elif tab_text == "Pricing":
+            elif tab_text == "מחירון":
                 self.refresh_global_pricing_tab()
         except:
             pass

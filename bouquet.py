@@ -22,6 +22,8 @@ def load_all_bouquets():
                     flowers = []
                     for _, row in group.iterrows():
                         f_name = row["Flower Name"]
+                        if pd.isna(f_name):
+                            continue
                         f_color = row["Color"]
                         f_size = row["Size"]
                         count = int(row["Count"])
@@ -45,6 +47,17 @@ def load_all_bouquets():
 def save_all_bouquets(all_bouquets):
     data = []
     for b_name, flowers in all_bouquets.items():
+        if not flowers:
+            # Save empty bouquet
+            data.append({
+                "Bouquet Name": b_name,
+                "Flower Name": None,
+                "Color": None,
+                "Size": None,
+                "Count": 0
+            })
+            continue
+
         # Count flowers
         counts = defaultdict(int)
         for f in flowers:
