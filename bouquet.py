@@ -46,6 +46,25 @@ class Bouquet:
         else:
             raise ValueError(f"Bouquet '{name}' not found in Bouquets.json")
     
+    @staticmethod
+    def rename_bouquet(old_name, new_name):
+        try:
+            with open("Bouquets.json", "r", encoding="utf-8") as b:
+                all_bouquets = json.load(b)
+        except (FileNotFoundError, json.JSONDecodeError):
+            raise ValueError("Database not found.")
+
+        if old_name not in all_bouquets:
+            raise ValueError(f"Bouquet '{old_name}' not found.")
+        
+        if new_name in all_bouquets:
+            raise ValueError(f"Bouquet '{new_name}' already exists.")
+
+        all_bouquets[new_name] = all_bouquets.pop(old_name)
+        
+        with open("Bouquets.json", "w", encoding="utf-8") as b:
+            json.dump(all_bouquets, b, ensure_ascii=False, indent=2)
+
     def select_flower(self, flower: FlowerData, count=1):
         for _ in range(count):
             self.flowers.append(flower)

@@ -26,18 +26,25 @@ class FlowerApp:
         self.flower_sizes = FlowerSizes()
         
         self.current_order = []
+        self.tab_images = [] # Keep references to images
 
         self.create_menu()
 
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
         
-        self.create_flowers_tab()
-        self.create_colors_tab()
-        self.create_bouquets_tab()
         self.create_orders_tab()
         self.create_quantities_tab()
+        self.create_bouquets_tab()
+        self.create_flowers_tab()
+        self.create_colors_tab()
         
+    def create_tab_image(self, color):
+        img = tk.PhotoImage(width=20, height=20)
+        img.put(color, to=(0, 0, 20, 20))
+        self.tab_images.append(img)
+        return img
+
     def create_menu(self):
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
@@ -124,7 +131,8 @@ class FlowerApp:
 
     def create_flowers_tab(self):
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="Flowers")
+        img = self.create_tab_image('lightblue')
+        self.notebook.add(frame, text="Flowers", image=img, compound='left')
         
         # List
         list_frame = ttk.Frame(frame)
@@ -178,7 +186,8 @@ class FlowerApp:
 
     def create_colors_tab(self):
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="Colors")
+        img = self.create_tab_image('lightgreen')
+        self.notebook.add(frame, text="Colors", image=img, compound='left')
         
         # List
         list_frame = ttk.Frame(frame)
@@ -232,7 +241,8 @@ class FlowerApp:
 
     def create_bouquets_tab(self):
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="Bouquets")
+        img = self.create_tab_image('lightyellow')
+        self.notebook.add(frame, text="Bouquets", image=img, compound='left')
         
         # List
         list_frame = ttk.Frame(frame)
@@ -271,6 +281,9 @@ class FlowerApp:
         
         del_btn = ttk.Button(btn_frame, text="Delete Bouquet", command=self.delete_bouquet)
         del_btn.pack(side='left', padx=5)
+        
+        edit_btn = ttk.Button(btn_frame, text="Edit Name", command=self.edit_bouquet_name)
+        edit_btn.pack(side='left', padx=5)
         
         self.refresh_bouquets_list()
 
@@ -321,6 +334,23 @@ class FlowerApp:
                     self.refresh_bouquets_list()
                 except Exception as e:
                     messagebox.showerror("Error", str(e))
+
+    def edit_bouquet_name(self):
+        selection = self.bouquets_listbox.curselection()
+        if selection:
+            old_name = self.bouquets_listbox.get(selection[0])
+            new_name = simpledialog.askstring("Edit Name", f"Enter new name for '{old_name}':")
+            if new_name:
+                new_name = new_name.strip()
+                if new_name and new_name != old_name:
+                    try:
+                        Bouquet.rename_bouquet(old_name, new_name)
+                        self.refresh_bouquets_list()
+                        messagebox.showinfo("Success", f"Renamed '{old_name}' to '{new_name}'.")
+                    except ValueError as e:
+                        messagebox.showerror("Error", str(e))
+                    except Exception as e:
+                        messagebox.showerror("Error", f"An error occurred: {e}")
 
     def open_bouquet_editor(self, event):
         selection = self.bouquets_listbox.curselection()
@@ -472,7 +502,8 @@ class FlowerApp:
 
     def create_orders_tab(self):
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="Order")
+        img = self.create_tab_image('darkorange')
+        self.notebook.add(frame, text="Order", image=img, compound='left')
         
         # Controls
         controls = ttk.Frame(frame)
@@ -613,37 +644,62 @@ class FlowerApp:
             messagebox.showwarning("Warning", "Order is empty.")
             return
 
-        name = simpledialog.askstring("Save Order", "Enter order name:")
-        if name:
-            # Sanitize filename
-            filename = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()
-            if not filename:
-                messagebox.showerror("Error", "Invalid order name.")
+        # Auto-generate filename from current date DD_MM_YYYY
+        filename = datetime.now().strftime("%d_%m_%Y")
+        
+        orders_dir = "orders"
+        os.makedirs(orders_dir, exist_ok=True)
+        filepath = os.path.join(orders_dir, f"{filename}.json")
+        
+        if os.path.exists(filepath):
+            if not messagebox.askyesno("Confirm Overwrite", f"Order '{filename}' already exists. Overwrite?"):
                 return
-                
-            orders_dir = "Orders"
-            os.makedirs(orders_dir, exist_ok=True)
-            filepath = os.path.join(orders_dir, f"{filename}.json")
-            
-            try:
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    json.dump(self.current_order, f, ensure_ascii=False, indent=2)
-                messagebox.showinfo("Success", f"Order saved to '{filepath}'.")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to save order: {e}")
+        
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(self.current_order, f, ensure_ascii=False, indent=2)
+            # messagebox.showinfo("Success", f"Order saved to '{filepath}'.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save order: {e}")
 
     def load_order(self):
-        orders_dir = "Orders"
+        orders_dir = "orders"
         if not os.path.exists(orders_dir):
             os.makedirs(orders_dir)
+            messagebox.showinfo("Info", "No orders found.")
+            return
+
+        # Get list of json files sorted by modification time (newest first)
+        files = [f for f in os.listdir(orders_dir) if f.endswith('.json')]
+        if not files:
+            messagebox.showinfo("Info", "No orders found.")
+            return
             
-        filepath = filedialog.askopenfilename(
-            initialdir=orders_dir,
-            title="Select Order",
-            filetypes=(("JSON files", "*.json"), ("All files", "*.*"))
-        )
+        files.sort(key=lambda x: os.path.getmtime(os.path.join(orders_dir, x)), reverse=True)
+        recent_files = files[:10]
+
+        # Create selection window
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Load Recent Order")
+        dialog.geometry("300x400")
         
-        if filepath:
+        tk.Label(dialog, text="Select an order to load:").pack(pady=5)
+        
+        listbox = tk.Listbox(dialog, exportselection=False)
+        listbox.pack(expand=True, fill='both', padx=10, pady=5)
+        
+        for f in recent_files:
+            listbox.insert(tk.END, f)
+            
+        def do_load():
+            selection = listbox.curselection()
+            if not selection:
+                return
+            
+            filename = listbox.get(selection[0])
+            filepath = os.path.join(orders_dir, filename)
+            dialog.destroy()
+            
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -654,15 +710,21 @@ class FlowerApp:
                     self.order_listbox.delete(0, tk.END)
                     for name, qty in self.current_order:
                         self.order_listbox.insert(tk.END, f"{name} (x{qty})")
-                    messagebox.showinfo("Success", "Order loaded.")
+                    #messagebox.showinfo("Success", f"Order '{filename}' loaded.")
                 else:
                     messagebox.showerror("Error", "Invalid order file format.")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load order: {e}")
 
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="Load", command=do_load).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
     def create_quantities_tab(self):
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="Quantities")
+        img = self.create_tab_image('lavender')
+        self.notebook.add(frame, text="Quantities", image=img, compound='left')
         
         # List
         list_frame = ttk.Frame(frame)
