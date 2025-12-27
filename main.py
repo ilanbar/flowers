@@ -54,7 +54,7 @@ except ImportError:
 class FlowerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Flower Shop Manager")
+        self.root.title("מנהל חנות פרחים")
         
         # Handle Window Close
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -85,12 +85,32 @@ class FlowerApp:
 
         self.create_menu()
 
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
+        # Toolbar
+        self.toolbar = ttk.Frame(root)
+        self.toolbar.pack(fill='x', padx=10, pady=5)
+        
+        self.show_config_var = tk.BooleanVar(value=True)
+        self.show_config_chk = ttk.Checkbutton(self.toolbar, text="הצג לשוניות הגדרה", variable=self.show_config_var, command=self.toggle_right_pane)
+        self.show_config_chk.pack(side='right')
+
+        # Split Layout
+        self.main_paned = ttk.PanedWindow(root, orient=tk.HORIZONTAL)
+        self.main_paned.pack(expand=True, fill='both', padx=10, pady=10)
+
+        self.left_notebook = ttk.Notebook(self.main_paned)
+        self.main_paned.add(self.left_notebook, weight=1)
+
+        self.right_notebook = ttk.Notebook(self.main_paned)
+        self.main_paned.add(self.right_notebook, weight=2)
+
+        # Bind tab changes
+        self.left_notebook.bind("<<NotebookTabChanged>>", self.on_tab_change)
+        self.right_notebook.bind("<<NotebookTabChanged>>", self.on_tab_change)
         
         self.create_orders_tab()
         self.create_quantities_tab()
         self.create_order_pricing_tab()
+        self.create_summary_tab()
         self.create_bouquets_tab()
         self.create_flowers_tab()
         self.create_colors_tab()
@@ -98,29 +118,35 @@ class FlowerApp:
         
         if self.drive_sync:
             self.perform_startup_sync()
+            
+    def toggle_right_pane(self):
+        if self.show_config_var.get():
+            self.main_paned.add(self.right_notebook, weight=2)
+        else:
+            self.main_paned.forget(self.right_notebook)
         
     def perform_startup_sync(self):
         if not os.path.exists(os.path.join(application_path, 'credentials.json')):
             return
 
-        if messagebox.askyesno("Google Drive Sync", "Do you want to download the latest data from Google Drive?"):
+        if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להוריד את הנתונים העדכניים מ-Google Drive?"):
             try:
                 files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
                 self.drive_sync.download_files(files_to_sync)
                 self.reload_data()
                 #messagebox.showinfo("Sync", "Download complete. Loading data...")
             except Exception as e:
-                messagebox.showerror("Sync Error", f"Failed to download from Drive: {e}")
+                messagebox.showerror("שגיאת סנכרון", f"נכשל בהורדה מ-Drive: {e}")
 
     def on_closing(self):
         if self.drive_sync and os.path.exists(os.path.join(application_path, 'credentials.json')):
-            if messagebox.askyesno("Google Drive Sync", "Do you want to upload changes to Google Drive before exiting?"):
+            if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להעלות שינויים ל-Google Drive לפני היציאה?"):
                 try:
                     files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
                     self.drive_sync.upload_files(files_to_sync)
                     # messagebox.showinfo("Sync", "Upload complete.")
                 except Exception as e:
-                    messagebox.showerror("Sync Error", f"Failed to upload to Drive: {e}")
+                    messagebox.showerror("שגיאת סנכרון", f"נכשל בהעלאה ל-Drive: {e}")
         
         self.root.destroy()
 
@@ -177,7 +203,7 @@ class FlowerApp:
         try:
             df.to_excel("DefaultPricing.xlsx", index=False)
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save default prices: {e}")
+            messagebox.showerror("שגיאה", f"שגיאה בשמירת מחירי ברירת מחדל: {e}")
 
     def create_tab_image(self, color):
         img = tk.PhotoImage(width=20, height=20)
@@ -190,11 +216,11 @@ class FlowerApp:
         self.root.config(menu=menubar)
         
         file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Create Backup", command=self.create_backup)
-        file_menu.add_command(label="Restore Backup", command=self.restore_backup_dialog)
+        menubar.add_cascade(label="קובץ", menu=file_menu)
+        file_menu.add_command(label="צור גיבוי", command=self.create_backup)
+        file_menu.add_command(label="שחזר גיבוי", command=self.restore_backup_dialog)
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.quit)
+        file_menu.add_command(label="יציאה", command=self.root.quit)
 
     def create_backup(self):
         try:
@@ -207,13 +233,13 @@ class FlowerApp:
                 if os.path.exists(filename):
                     shutil.copy2(filename, backup_dir)
             
-            #messagebox.showinfo("Backup", f"Backup created successfully in:\n{backup_dir}")
+            #messagebox.showinfo("גיבוי", f"גיבוי נוצר בהצלחה ב:\n{backup_dir}")
         except Exception as e:
-            messagebox.showerror("Backup Error", f"Failed to create backup: {e}")
+            messagebox.showerror("שגיאת גיבוי", f"נכשל ביצירת גיבוי: {e}")
 
     def restore_backup_dialog(self):
         if not os.path.exists("backups"):
-            messagebox.showinfo("Restore", "No backups found.")
+            messagebox.showinfo("שחזור", "לא נמצאו גיבויים.")
             return
 
         # Get list of backups (directories)
@@ -221,14 +247,14 @@ class FlowerApp:
         backups.sort(reverse=True) # Newest first
         
         if not backups:
-            messagebox.showinfo("Restore", "No backups found.")
+            messagebox.showinfo("שחזור", "לא נמצאו גיבויים.")
             return
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("Restore Backup")
+        dialog.title("שחזר גיבוי")
         dialog.geometry("300x400")
         
-        tk.Label(dialog, text="Select a backup to restore:").pack(pady=5)
+        tk.Label(dialog, text="בחר גיבוי לשחזור:").pack(pady=5)
         
         listbox = tk.Listbox(dialog)
         listbox.pack(expand=True, fill='both', padx=10, pady=5)
@@ -244,7 +270,7 @@ class FlowerApp:
             backup_name = listbox.get(selection[0])
             backup_path = os.path.join("backups", backup_name)
             
-            if messagebox.askyesno("Confirm Restore", f"Are you sure you want to restore from '{backup_name}'?\nCurrent data will be overwritten."):
+            if messagebox.askyesno("אשר שחזור", f"האם אתה בטוח שברצונך לשחזר מ-'{backup_name}'?\nהנתונים הנוכחיים יוחלפו."):
                 try:
                     files_to_restore = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
                     for filename in files_to_restore:
@@ -253,12 +279,12 @@ class FlowerApp:
                             shutil.copy2(src, filename)
                     
                     self.reload_data()
-                    messagebox.showinfo("Restore", "Data restored successfully.")
+                    messagebox.showinfo("שחזור", "הנתונים שוחזרו בהצלחה.")
                     dialog.destroy()
                 except Exception as e:
-                    messagebox.showerror("Restore Error", f"Failed to restore: {e}")
+                    messagebox.showerror("שגיאת שחזור", f"נכשל בשחזור: {e}")
 
-        tk.Button(dialog, text="Restore", command=do_restore).pack(pady=10)
+        tk.Button(dialog, text="שחזר", command=do_restore).pack(pady=10)
 
     def reload_data(self):
         self.flower_types = FlowersTypes()
@@ -272,9 +298,9 @@ class FlowerApp:
         self.refresh_global_pricing_tab()
 
     def create_flowers_tab(self):
-        frame = ttk.Frame(self.notebook)
+        frame = ttk.Frame(self.right_notebook)
         img = self.create_tab_image('lightblue')
-        self.notebook.add(frame, text="Flowers", image=img, compound='left')
+        self.right_notebook.add(frame, text="פרחים", image=img, compound='left')
         
         # List
         list_frame = ttk.Frame(frame)
@@ -294,15 +320,88 @@ class FlowerApp:
         controls = ttk.Frame(frame)
         controls.pack(fill='x', padx=5, pady=5)
         
-        ttk.Label(controls, text="Name:").pack(side='left')
+        ttk.Label(controls, text="שם:").pack(side='left')
         self.flower_entry = ttk.Entry(controls)
         self.flower_entry.pack(side='left', expand=True, fill='x', padx=5)
         
-        add_btn = ttk.Button(controls, text="Add", command=self.add_flower)
+        add_btn = ttk.Button(controls, text="הוסף", command=self.add_flower)
         add_btn.pack(side='left', padx=5)
         
-        del_btn = ttk.Button(controls, text="Delete", command=self.delete_flower)
+        del_btn = ttk.Button(controls, text="מחק", command=self.delete_flower)
         del_btn.pack(side='left', padx=5)
+
+        load_btn = ttk.Button(controls, text="טען פרחים", command=self.load_flowers_from_file)
+        load_btn.pack(side='left', padx=5)
+
+    def load_flowers_from_file(self):
+        file_path = filedialog.askopenfilename(
+            title="בחר קובץ פרחים",
+            filetypes=[("קבצי Excel/JSON", "*.xlsx *.json"), ("קבצי Excel", "*.xlsx"), ("קבצי JSON", "*.json")]
+        )
+        if not file_path:
+            return
+
+        try:
+            new_flowers = {}
+            if file_path.lower().endswith('.xlsx'):
+                df = pd.read_excel(file_path)
+                # Expected columns: Name, Sizes (optional)
+                if "Name" not in df.columns:
+                     # Try "Flower Name" or just first column?
+                     if "Flower Name" in df.columns:
+                         df.rename(columns={"Flower Name": "Name"}, inplace=True)
+                     else:
+                         # Fallback: assume first column is Name
+                         df.rename(columns={df.columns[0]: "Name"}, inplace=True)
+                
+                for _, row in df.iterrows():
+                    name = str(row['Name']).strip()
+                    if not name: continue
+                    
+                    sizes = []
+                    if "Sizes" in df.columns and pd.notna(row['Sizes']):
+                        sizes = [s.strip() for s in str(row['Sizes']).split(',') if s.strip()]
+                    
+                    new_flowers[name] = {'colors': [], 'sizes': sizes}
+
+            elif file_path.lower().endswith('.json'):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        # List of strings
+                        for name in data:
+                            new_flowers[name] = {'colors': [], 'sizes': []}
+                    elif isinstance(data, dict):
+                        # Dict of configs
+                        for name, config in data.items():
+                            sizes = config.get('sizes', [])
+                            new_flowers[name] = {'colors': [], 'sizes': sizes}
+            
+            if new_flowers:
+                # Merge
+                added_count = 0
+                updated_count = 0
+                for name, config in new_flowers.items():
+                    if name not in self.flower_types.flowers:
+                        self.flower_types.flowers[name] = config
+                        added_count += 1
+                    else:
+                        # Merge sizes
+                        existing_sizes = set(self.flower_types.flowers[name].get('sizes', []))
+                        new_sizes = set(config.get('sizes', []))
+                        if new_sizes - existing_sizes: # If there are new sizes
+                            combined = list(existing_sizes.union(new_sizes))
+                            self.flower_types.flowers[name]['sizes'] = combined
+                            updated_count += 1
+                
+                self.flower_types._save()
+                self.refresh_flowers_list()
+                messagebox.showinfo("הצלחה", f"הקובץ עובד.\nנוספו: {added_count} פרחים חדשים.\nעודכנו: {updated_count} פרחים קיימים.")
+            else:
+                messagebox.showwarning("אזהרה", "לא נמצאו פרחים בקובץ.")
+
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"נכשל בטעינת פרחים: {e}")
 
     def open_flower_editor(self, event):
         selection = self.flowers_listbox.curselection()
@@ -316,14 +415,14 @@ class FlowerApp:
             return
         
         editor = tk.Toplevel(self.root)
-        editor.title(f"Edit Flower: {name}")
+        editor.title(f"ערוך פרח: {name}")
         editor.geometry("400x400")
         
         config = self.flower_types.get_config(name)
         current_sizes = set(config.get('sizes', []))
         
         # Sizes
-        size_frame = ttk.LabelFrame(editor, text="Allowed Sizes")
+        size_frame = ttk.LabelFrame(editor, text="גדלים מותרים")
         size_frame.pack(fill='both', expand=True, padx=10, pady=5)
         
         size_listbox = tk.Listbox(size_frame, selectmode=tk.MULTIPLE, exportselection=False)
@@ -340,11 +439,11 @@ class FlowerApp:
             selected_sizes = [size_listbox.get(i) for i in size_listbox.curselection()]
             
             self.flower_types.update_config(name, selected_sizes)
-            messagebox.showinfo("Success", f"Updated configuration for {name}")
+            messagebox.showinfo("הצלחה", f"הגדרות עודכנו עבור {name}")
             self.refresh_flowers_list() # Refresh list to show new config
             editor.destroy()
             
-        ttk.Button(editor, text="Save", command=save_config).pack(pady=10)
+        ttk.Button(editor, text="שמור", command=save_config).pack(pady=10)
 
     def refresh_flowers_list(self):
         if not hasattr(self, 'flowers_listbox'):
@@ -355,16 +454,16 @@ class FlowerApp:
             config = self.flower_types.get_config(f)
             sizes = config.get('sizes', [])
             
-            size_str = ",".join(sizes) if sizes else "All"
+            size_str = ",".join(sizes) if sizes else "הכל"
             
-            display_text = f"{f} (Sizes: {size_str})"
+            display_text = f"{f} (גדלים: {size_str})"
             self.flowers_listbox.insert(tk.END, display_text)
 
     def add_flower(self):
         name = self.flower_entry.get().strip()
         if name:
             if self.flower_types.contains(name):
-                messagebox.showwarning("Warning", f"Flower '{name}' already exists.")
+                messagebox.showwarning("אזהרה", f"פרח '{name}' כבר קיים.")
                 return
             self.flower_types.add(name)
             self.flower_entry.delete(0, tk.END)
@@ -376,14 +475,14 @@ class FlowerApp:
             idx = selection[0]
             if idx < len(self.displayed_flowers):
                 name = self.displayed_flowers[idx]
-                if messagebox.askyesno("Confirm", f"Delete flower '{name}'?"):
+                if messagebox.askyesno("אישור", f"למחוק את הפרח '{name}'?"):
                     self.flower_types.remove(name)
                     self.refresh_flowers_list()
 
     def create_colors_tab(self):
-        frame = ttk.Frame(self.notebook)
+        frame = ttk.Frame(self.right_notebook)
         img = self.create_tab_image('lightgreen')
-        self.notebook.add(frame, text="Colors", image=img, compound='left')
+        self.right_notebook.add(frame, text="צבעים", image=img, compound='left')
         
         # List
         list_frame = ttk.Frame(frame)
@@ -402,14 +501,14 @@ class FlowerApp:
         controls = ttk.Frame(frame)
         controls.pack(fill='x', padx=5, pady=5)
         
-        ttk.Label(controls, text="Color:").pack(side='left')
+        ttk.Label(controls, text="צבע:").pack(side='left')
         self.color_entry = ttk.Entry(controls)
         self.color_entry.pack(side='left', expand=True, fill='x', padx=5)
         
-        add_btn = ttk.Button(controls, text="Add", command=self.add_color)
+        add_btn = ttk.Button(controls, text="הוסף", command=self.add_color)
         add_btn.pack(side='left', padx=5)
         
-        del_btn = ttk.Button(controls, text="Delete", command=self.delete_color)
+        del_btn = ttk.Button(controls, text="מחק", command=self.delete_color)
         del_btn.pack(side='left', padx=5)
 
     def refresh_colors_list(self):
@@ -423,7 +522,7 @@ class FlowerApp:
         color = self.color_entry.get().strip()
         if color:
             if color in self.flower_colors.colors:
-                messagebox.showwarning("Warning", f"Color '{color}' already exists.")
+                messagebox.showwarning("אזהרה", f"צבע '{color}' כבר קיים.")
                 return
             self.flower_colors.add(color)
             self.color_entry.delete(0, tk.END)
@@ -433,14 +532,14 @@ class FlowerApp:
         selection = self.colors_listbox.curselection()
         if selection:
             color = self.colors_listbox.get(selection[0])
-            if messagebox.askyesno("Confirm", f"Delete color '{color}'?"):
+            if messagebox.askyesno("אישור", f"למחוק את הצבע '{color}'?"):
                 self.flower_colors.remove(color)
                 self.refresh_colors_list()
 
     def create_bouquets_tab(self):
-        frame = ttk.Frame(self.notebook)
+        frame = ttk.Frame(self.right_notebook)
         img = self.create_tab_image('lightyellow')
-        self.notebook.add(frame, text="Bouquets", image=img, compound='left')
+        self.right_notebook.add(frame, text="זרים", image=img, compound='left')
         
         # List
         list_frame = ttk.Frame(frame)
@@ -462,11 +561,11 @@ class FlowerApp:
         input_frame = ttk.Frame(controls)
         input_frame.pack(fill='x', pady=2)
         
-        ttk.Label(input_frame, text="Name:").pack(side='left')
+        ttk.Label(input_frame, text="שם:").pack(side='left')
         self.bouquet_name_entry = ttk.Entry(input_frame)
         self.bouquet_name_entry.pack(side='left', expand=True, fill='x', padx=5)
         
-        ttk.Label(input_frame, text="Based On:").pack(side='left')
+        ttk.Label(input_frame, text="מבוסס על:").pack(side='left')
         self.based_on_combo = ttk.Combobox(input_frame, state="readonly", width=20)
         self.based_on_combo.pack(side='left', padx=5)
         
@@ -474,16 +573,16 @@ class FlowerApp:
         btn_frame = ttk.Frame(controls)
         btn_frame.pack(fill='x', pady=2)
         
-        add_btn = ttk.Button(btn_frame, text="Add Bouquet", command=self.add_bouquet)
+        add_btn = ttk.Button(btn_frame, text="הוסף זר", command=self.add_bouquet)
         add_btn.pack(side='left', padx=5)
         
-        del_btn = ttk.Button(btn_frame, text="Delete Bouquet", command=self.delete_bouquet)
+        del_btn = ttk.Button(btn_frame, text="מחק זר", command=self.delete_bouquet)
         del_btn.pack(side='left', padx=5)
         
-        edit_btn = ttk.Button(btn_frame, text="Edit Name", command=self.edit_bouquet_name)
+        edit_btn = ttk.Button(btn_frame, text="ערוך שם", command=self.edit_bouquet_name)
         edit_btn.pack(side='left', padx=5)
 
-        load_btn = ttk.Button(btn_frame, text="Load Bouquets", command=self.load_bouquets_from_file)
+        load_btn = ttk.Button(btn_frame, text="טען זרים", command=self.load_bouquets_from_file)
         load_btn.pack(side='left', padx=5)
         
         self.refresh_bouquets_list()
@@ -520,28 +619,28 @@ class FlowerApp:
                 self.refresh_bouquets_list()
                 # messagebox.showinfo("Success", f"Bouquet '{b.name}' created.")
             except ValueError as e:
-                messagebox.showerror("Error", str(e))
+                messagebox.showerror("שגיאה", str(e))
             except Exception as e:
-                messagebox.showerror("Error", f"An error occurred: {e}")
+                messagebox.showerror("שגיאה", f"אירעה שגיאה: {e}")
         else:
-            messagebox.showwarning("Warning", "Please enter a bouquet name.")
+            messagebox.showwarning("אזהרה", "נא להזין שם לזר.")
 
     def delete_bouquet(self):
         selection = self.bouquets_listbox.curselection()
         if selection:
             name = self.bouquets_listbox.get(selection[0])
-            if messagebox.askyesno("Confirm", f"Delete bouquet '{name}'?"):
+            if messagebox.askyesno("אישור", f"למחוק את הזר '{name}'?"):
                 try:
                     Bouquet.delete_bouquet(name)
                     self.refresh_bouquets_list()
                 except Exception as e:
-                    messagebox.showerror("Error", str(e))
+                    messagebox.showerror("שגיאה", str(e))
 
     def edit_bouquet_name(self):
         selection = self.bouquets_listbox.curselection()
         if selection:
             old_name = self.bouquets_listbox.get(selection[0])
-            new_name = simpledialog.askstring("Edit Name", f"Enter new name for '{old_name}':")
+            new_name = simpledialog.askstring("ערוך שם", f"הזן שם חדש עבור '{old_name}':")
             if new_name:
                 new_name = new_name.strip()
                 if new_name and new_name != old_name:
@@ -550,14 +649,14 @@ class FlowerApp:
                         self.refresh_bouquets_list()
                         # messagebox.showinfo("Success", f"Renamed '{old_name}' to '{new_name}'.")
                     except ValueError as e:
-                        messagebox.showerror("Error", str(e))
+                        messagebox.showerror("שגיאה", str(e))
                     except Exception as e:
-                        messagebox.showerror("Error", f"An error occurred: {e}")
+                        messagebox.showerror("שגיאה", f"אירעה שגיאה: {e}")
 
     def load_bouquets_from_file(self):
         file_path = filedialog.askopenfilename(
-            title="Select Bouquets File",
-            filetypes=[("Excel/JSON Files", "*.xlsx *.json"), ("Excel Files", "*.xlsx"), ("JSON Files", "*.json")]
+            title="בחר קובץ זרים",
+            filetypes=[("קבצי Excel/JSON", "*.xlsx *.json"), ("קבצי Excel", "*.xlsx"), ("קבצי JSON", "*.json")]
         )
         if not file_path:
             return
@@ -601,12 +700,12 @@ class FlowerApp:
                 save_all_bouquets(current_bouquets)
                 
                 self.refresh_bouquets_list()
-                messagebox.showinfo("Success", f"Loaded/Merged {len(new_bouquets)} bouquets.")
+                messagebox.showinfo("הצלחה", f"נטענו/מוזגו {len(new_bouquets)} זרים.")
             else:
-                messagebox.showwarning("Warning", "No bouquets found in file.")
+                messagebox.showwarning("אזהרה", "לא נמצאו זרים בקובץ.")
 
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load bouquets: {e}")
+            messagebox.showerror("שגיאה", f"נכשל בטעינת זרים: {e}")
 
     def open_bouquet_editor(self, event):
         selection = self.bouquets_listbox.curselection()
@@ -617,15 +716,15 @@ class FlowerApp:
         try:
             bouquet = Bouquet(name, load_existing=True)
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load bouquet: {e}")
+            messagebox.showerror("שגיאה", f"שגיאה בטעינת הזר: {e}")
             return
 
         editor = tk.Toplevel(self.root)
-        editor.title(f"Edit Bouquet: {name}")
+        editor.title(f"ערוך זר: {name}")
         # Auto-size to fit contents
         
         # Left: List of flowers
-        list_frame = ttk.LabelFrame(editor, text="Flowers in Bouquet")
+        list_frame = ttk.LabelFrame(editor, text="פרחים בזר")
         list_frame.pack(side='left', fill='both', expand=True, padx=10, pady=10)
         
         scrollbar = ttk.Scrollbar(list_frame)
@@ -653,18 +752,18 @@ class FlowerApp:
         controls_frame.pack(side='right', fill='y', padx=10, pady=10)
         
         # Add Flower Section
-        add_frame = ttk.LabelFrame(controls_frame, text="Add Flower")
+        add_frame = ttk.LabelFrame(controls_frame, text="הוסף פרח")
         add_frame.pack(fill='x', pady=5)
         
-        ttk.Label(add_frame, text="Type:").pack(anchor='w', padx=5)
+        ttk.Label(add_frame, text="סוג:").pack(anchor='w', padx=5)
         type_combo = ttk.Combobox(add_frame, values=sorted(self.flower_types.flowers), state="readonly")
         type_combo.pack(fill='x', padx=5, pady=2)
         
-        ttk.Label(add_frame, text="Color:").pack(anchor='w', padx=5)
+        ttk.Label(add_frame, text="צבע:").pack(anchor='w', padx=5)
         color_combo = ttk.Combobox(add_frame, values=sorted(self.flower_colors.colors), state="readonly")
         color_combo.pack(fill='x', padx=5, pady=2)
         
-        ttk.Label(add_frame, text="Size:").pack(anchor='w', padx=5)
+        ttk.Label(add_frame, text="גודל:").pack(anchor='w', padx=5)
         size_combo = ttk.Combobox(add_frame, values=self.flower_sizes.sizes, state="readonly")
         size_combo.pack(fill='x', padx=5, pady=2)
         
@@ -688,7 +787,7 @@ class FlowerApp:
             
         type_combo.bind('<<ComboboxSelected>>', update_add_combos)
         
-        ttk.Label(add_frame, text="Count:").pack(anchor='w', padx=5)
+        ttk.Label(add_frame, text="כמות:").pack(anchor='w', padx=5)
         count_spin = ttk.Spinbox(add_frame, from_=1, to=100, width=5)
         count_spin.set(1)
         count_spin.pack(anchor='w', padx=5, pady=2)
@@ -707,9 +806,9 @@ class FlowerApp:
                 bouquet.select_flower(flower, count)
                 refresh_list()
             else:
-                messagebox.showwarning("Warning", "Please select Type, Color, and Size.")
+                messagebox.showwarning("אזהרה", "נא לבחור סוג, צבע וגודל.")
         
-        ttk.Button(add_frame, text="Add", command=add_flower).pack(fill='x', padx=5, pady=5)
+        ttk.Button(add_frame, text="הוסף", command=add_flower).pack(fill='x', padx=5, pady=5)
         
         def remove_flower_action():
             selection = flowers_list.curselection()
@@ -719,10 +818,10 @@ class FlowerApp:
                 bouquet.remove_flower(flower, count=1)
                 refresh_list()
         
-        ttk.Button(controls_frame, text="Remove Selected (1)", command=remove_flower_action).pack(fill='x', pady=5)
+        ttk.Button(controls_frame, text="הסר נבחרים (1)", command=remove_flower_action).pack(fill='x', pady=5)
         
         # Edit Quantity Section
-        edit_frame = ttk.LabelFrame(controls_frame, text="Edit Quantity")
+        edit_frame = ttk.LabelFrame(controls_frame, text="ערוך כמות")
         edit_frame.pack(fill='x', pady=5)
         
         edit_qty_spin = ttk.Spinbox(edit_frame, from_=1, to=100, width=5)
@@ -731,7 +830,7 @@ class FlowerApp:
         def update_quantity():
             selection = flowers_list.curselection()
             if not selection:
-                messagebox.showwarning("Warning", "Please select a flower to update.")
+                messagebox.showwarning("אזהרה", "אנא בחר פרח לעדכון.")
                 return
             
             idx = selection[0]
@@ -740,11 +839,11 @@ class FlowerApp:
             try:
                 new_qty = int(edit_qty_spin.get())
             except ValueError:
-                messagebox.showwarning("Warning", "Invalid quantity.")
+                messagebox.showwarning("אזהרה", "כמות לא תקינה.")
                 return
                 
             if new_qty < 1:
-                messagebox.showwarning("Warning", "Quantity must be at least 1.")
+                messagebox.showwarning("אזהרה", "הכמות חייבת להיות לפחות 1.")
                 return
 
             current_counts = bouquet.flower_count()
@@ -757,24 +856,24 @@ class FlowerApp:
             
             refresh_list()
             
-        ttk.Button(edit_frame, text="Update", command=update_quantity).pack(side='left', fill='x', expand=True, padx=5, pady=5)
+        ttk.Button(edit_frame, text="עדכן", command=update_quantity).pack(side='left', fill='x', expand=True, padx=5, pady=5)
 
         # Edit Details Section
-        edit_details_frame = ttk.LabelFrame(controls_frame, text="Edit Details")
+        edit_details_frame = ttk.LabelFrame(controls_frame, text="ערוך פרטים")
         edit_details_frame.pack(fill='x', pady=5)
         
-        ttk.Label(edit_details_frame, text="Color:").pack(anchor='w', padx=5)
+        ttk.Label(edit_details_frame, text="צבע:").pack(anchor='w', padx=5)
         edit_color_combo = ttk.Combobox(edit_details_frame, values=sorted(self.flower_colors.colors), state="readonly")
         edit_color_combo.pack(fill='x', padx=5, pady=2)
         
-        ttk.Label(edit_details_frame, text="Size:").pack(anchor='w', padx=5)
+        ttk.Label(edit_details_frame, text="גודל:").pack(anchor='w', padx=5)
         edit_size_combo = ttk.Combobox(edit_details_frame, values=self.flower_sizes.sizes, state="readonly")
         edit_size_combo.pack(fill='x', padx=5, pady=2)
         
         def update_details():
             selection = flowers_list.curselection()
             if not selection:
-                messagebox.showwarning("Warning", "Please select a flower to update.")
+                messagebox.showwarning("אזהרה", "אנא בחר פרח לעדכון.")
                 return
             
             idx = selection[0]
@@ -784,7 +883,7 @@ class FlowerApp:
             new_size = edit_size_combo.get()
             
             if not new_color or not new_size:
-                 messagebox.showwarning("Warning", "Please select Color and Size.")
+                 messagebox.showwarning("אזהרה", "אנא בחר צבע וגודל.")
                  return
 
             if new_color == old_flower.color and new_size == old_flower.size:
@@ -805,7 +904,7 @@ class FlowerApp:
             
             refresh_list()
             
-        ttk.Button(edit_details_frame, text="Update Details", command=update_details).pack(fill='x', padx=5, pady=5)
+        ttk.Button(edit_details_frame, text="עדכן פרטים", command=update_details).pack(fill='x', padx=5, pady=5)
 
         def on_flower_select(event):
             selection = flowers_list.curselection()
@@ -836,42 +935,56 @@ class FlowerApp:
         
         def save_bouquet():
             bouquet.save()
-            messagebox.showinfo("Success", "Bouquet saved.")
+            # messagebox.showinfo("הצלחה", "הזר נשמר.")
             
-        ttk.Button(controls_frame, text="Save Changes", command=save_bouquet).pack(fill='x', pady=20)
+        ttk.Button(controls_frame, text="שמור שינויים", command=save_bouquet).pack(fill='x', pady=20)
 
     def create_orders_tab(self):
-        frame = ttk.Frame(self.notebook)
+        frame = ttk.Frame(self.left_notebook)
         img = self.create_tab_image('darkorange')
-        self.notebook.add(frame, text="Order", image=img, compound='left')
+        self.left_notebook.add(frame, text="הזמנה", image=img, compound='left')
         
         # Controls
         controls = ttk.Frame(frame)
         controls.pack(fill='x', padx=5, pady=5)
         
-        ttk.Label(controls, text="Bouquet:").pack(side='left')
-        self.order_bouquet_combo = ttk.Combobox(controls, state="readonly", width=20)
-        self.order_bouquet_combo.pack(side='left', padx=5)
+        # Configure grid columns to expand evenly
+        controls.columnconfigure(1, weight=1)
+        controls.columnconfigure(3, weight=1)
+
+        # Row 0: Bouquet Selection
+        ttk.Label(controls, text="זר:").grid(row=0, column=0, sticky='w', padx=5, pady=2)
+        self.order_bouquet_combo = ttk.Combobox(controls, state="readonly")
+        self.order_bouquet_combo.grid(row=0, column=1, columnspan=3, sticky='ew', padx=5, pady=2)
         
-        ttk.Label(controls, text="Quantity:").pack(side='left')
+        # Row 1: Quantity and Add
+        ttk.Label(controls, text="כמות:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
         self.order_qty_spin = ttk.Spinbox(controls, from_=1, to=100, width=5)
         self.order_qty_spin.set(1)
-        self.order_qty_spin.pack(side='left', padx=5)
+        self.order_qty_spin.grid(row=1, column=1, sticky='w', padx=5, pady=2)
         
-        add_btn = ttk.Button(controls, text="Add to Order", command=self.add_to_order)
-        add_btn.pack(side='left', padx=5)
+        add_btn = ttk.Button(controls, text="הוסף להזמנה", command=self.add_to_order)
+        add_btn.grid(row=1, column=2, columnspan=2, sticky='ew', padx=5, pady=2)
         
-        del_btn = ttk.Button(controls, text="Remove Selected", command=self.remove_from_order)
-        del_btn.pack(side='left', padx=5)
+        # Row 2: Edit Actions
+        update_btn = ttk.Button(controls, text="עדכן כמות", command=self.update_order_quantity)
+        update_btn.grid(row=2, column=0, columnspan=2, sticky='ew', padx=5, pady=2)
         
-        update_btn = ttk.Button(controls, text="Update Qty", command=self.update_order_quantity)
-        update_btn.pack(side='left', padx=5)
+        del_btn = ttk.Button(controls, text="הסר נבחרים", command=self.remove_from_order)
+        del_btn.grid(row=2, column=2, columnspan=2, sticky='ew', padx=5, pady=2)
         
-        save_btn = ttk.Button(controls, text="Save Order", command=self.save_order)
-        save_btn.pack(side='left', padx=5)
+        # Row 3: File Actions
+        save_btn = ttk.Button(controls, text="שמור הזמנה", command=self.save_order)
+        save_btn.grid(row=3, column=0, columnspan=2, sticky='ew', padx=5, pady=2)
         
-        load_btn = ttk.Button(controls, text="Load Order", command=self.load_order)
-        load_btn.pack(side='left', padx=5)
+        load_btn = ttk.Button(controls, text="טען הזמנה", command=self.load_order)
+        load_btn.grid(row=3, column=2, columnspan=2, sticky='ew', padx=5, pady=2)
+        
+        # Configure columns to share width
+        controls.columnconfigure(0, weight=1)
+        controls.columnconfigure(1, weight=1)
+        controls.columnconfigure(2, weight=1)
+        controls.columnconfigure(3, weight=1)
         
         # Order List
         list_frame = ttk.Frame(frame)
@@ -885,20 +998,20 @@ class FlowerApp:
         self.order_listbox.bind('<<ListboxSelect>>', self.on_order_select)
         scrollbar.config(command=self.order_listbox.yview)
         
-        # Refresh bouquets list when tab is selected
-        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_change)
-
     def on_tab_change(self, event):
         # Check if the selected tab is "Order"
         try:
-            selected_tab = self.notebook.select()
-            tab_text = self.notebook.tab(selected_tab, "text")
+            notebook = event.widget
+            selected_tab = notebook.select()
+            tab_text = notebook.tab(selected_tab, "text")
             if tab_text == "Order":
                 self.refresh_order_bouquets()
             elif tab_text == "Quantities":
                 self.refresh_quantities()
             elif tab_text == "Order Pricing":
                 self.refresh_order_pricing_tab()
+            elif tab_text == "Summary":
+                self.refresh_summary_tab()
             elif tab_text == "Pricing":
                 self.refresh_global_pricing_tab()
         except:
@@ -941,7 +1054,7 @@ class FlowerApp:
                 self.order_listbox.insert(tk.END, f"{bouquet_name} (x{qty})")
                 self.current_order.append((bouquet_name, qty))
         else:
-            messagebox.showwarning("Warning", "Please select a bouquet and valid quantity.")
+            messagebox.showwarning("אזהרה", "נא לבחור זר וכמות חוקית.")
 
     def remove_from_order(self):
         selection = self.order_listbox.curselection()
@@ -962,7 +1075,7 @@ class FlowerApp:
     def update_order_quantity(self):
         selection = self.order_listbox.curselection()
         if not selection:
-            messagebox.showwarning("Warning", "Please select an item to update.")
+            messagebox.showwarning("אזהרה", "נא לבחור פריט לעדכון.")
             return
             
         idx = selection[0]
@@ -972,7 +1085,7 @@ class FlowerApp:
             try:
                 new_qty = int(self.order_qty_spin.get())
             except ValueError:
-                messagebox.showwarning("Warning", "Invalid quantity.")
+                messagebox.showwarning("אזהרה", "כמות לא חוקית.")
                 return
                 
             if new_qty > 0:
@@ -981,11 +1094,11 @@ class FlowerApp:
                 self.order_listbox.insert(idx, f"{bouquet_name} (x{new_qty})")
                 self.order_listbox.selection_set(idx)
             else:
-                messagebox.showwarning("Warning", "Quantity must be greater than 0.")
+                messagebox.showwarning("אזהרה", "הכמות חייבת להיות גדולה מ-0.")
 
     def save_order(self):
         if not self.current_order:
-            messagebox.showwarning("Warning", "Order is empty.")
+            messagebox.showwarning("אזהרה", "ההזמנה ריקה.")
             return
 
         # Auto-generate filename from current date DD_MM_YYYY
@@ -996,7 +1109,7 @@ class FlowerApp:
         filepath = os.path.join(orders_dir, f"{filename}.xlsx")
         
         if os.path.exists(filepath):
-            if not messagebox.askyesno("Confirm Overwrite", f"Order '{filename}' already exists. Overwrite?"):
+            if not messagebox.askyesno("אישור דריסה", f"הזמנה '{filename}' כבר קיימת. האם לדרוס?"):
                 return
         
         try:
@@ -1025,19 +1138,19 @@ class FlowerApp:
                 
             # messagebox.showinfo("Success", f"Order saved to '{filepath}'.")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save order: {e}")
+            messagebox.showerror("שגיאה", f"שגיאה בשמירת ההזמנה: {e}")
 
     def load_order(self):
         orders_dir = "orders"
         if not os.path.exists(orders_dir):
             os.makedirs(orders_dir)
-            messagebox.showinfo("Info", "No orders found.")
+            messagebox.showinfo("מידע", "לא נמצאו הזמנות.")
             return
 
         # Get list of xlsx files (and json for backward compat)
         files = [f for f in os.listdir(orders_dir) if f.endswith('.xlsx') or f.endswith('.json')]
         if not files:
-            messagebox.showinfo("Info", "No orders found.")
+            messagebox.showinfo("מידע", "לא נמצאו הזמנות.")
             return
             
         files.sort(key=lambda x: os.path.getmtime(os.path.join(orders_dir, x)), reverse=True)
@@ -1045,10 +1158,10 @@ class FlowerApp:
 
         # Create selection window
         dialog = tk.Toplevel(self.root)
-        dialog.title("Load Recent Order")
+        dialog.title("טען הזמנה אחרונה")
         dialog.geometry("300x400")
         
-        tk.Label(dialog, text="Select an order to load:").pack(pady=5)
+        tk.Label(dialog, text="בחר הזמנה לטעינה:").pack(pady=5)
         
         listbox = tk.Listbox(dialog, exportselection=False)
         listbox.pack(expand=True, fill='both', padx=10, pady=5)
@@ -1090,7 +1203,7 @@ class FlowerApp:
                         for name, qty in self.current_order:
                             self.order_listbox.insert(tk.END, f"{name} (x{qty})")
                     else:
-                        messagebox.showerror("Error", "Invalid order file format.")
+                        messagebox.showerror("שגיאה", "Invalid order file format.")
                 else:
                     # Excel load
                     df_order = pd.read_excel(filepath, sheet_name="Order")
@@ -1112,17 +1225,17 @@ class FlowerApp:
                         self.order_listbox.insert(tk.END, f"{name} (x{qty})")
 
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to load order: {e}")
+                messagebox.showerror("שגיאה", f"נכשל בטעינת ההזמנה: {e}")
 
         btn_frame = tk.Frame(dialog)
         btn_frame.pack(pady=10)
-        tk.Button(btn_frame, text="Load", command=do_load).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="טען", command=do_load).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="ביטול", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
 
     def create_quantities_tab(self):
-        frame = ttk.Frame(self.notebook)
+        frame = ttk.Frame(self.left_notebook)
         img = self.create_tab_image('lavender')
-        self.notebook.add(frame, text="Quantities", image=img, compound='left')
+        self.left_notebook.add(frame, text="כמויות", image=img, compound='left')
         
         # List
         list_frame = ttk.Frame(frame)
@@ -1136,7 +1249,7 @@ class FlowerApp:
         scrollbar.config(command=self.quantities_listbox.yview)
         
         # Total Label
-        self.total_flowers_label = ttk.Label(frame, text="Total Flowers: 0")
+        self.total_flowers_label = ttk.Label(frame, text="סה\"כ פרחים: 0")
         self.total_flowers_label.pack(pady=5)
 
     def refresh_quantities(self):
@@ -1161,21 +1274,21 @@ class FlowerApp:
         for flower, count in sorted_flowers:
             self.quantities_listbox.insert(tk.END, f"{flower.name} - {flower.color} - {flower.size}: {count}")
             
-        self.total_flowers_label.config(text=f"Total Flowers: {grand_total}")
+        self.total_flowers_label.config(text=f"סה\"כ פרחים: {grand_total}")
 
-        self.total_flowers_label.config(text=f"Total Flowers: {grand_total}")
+        self.total_flowers_label.config(text=f"סה\"כ פרחים: {grand_total}")
 
     def create_order_pricing_tab(self):
-        frame = ttk.Frame(self.notebook)
+        frame = ttk.Frame(self.left_notebook)
         img = self.create_tab_image('gold')
-        self.notebook.add(frame, text="Order Pricing", image=img, compound='left')
+        self.left_notebook.add(frame, text="תמחור הזמנה", image=img, compound='left')
         
         # Header
         header_frame = ttk.Frame(frame)
         header_frame.pack(fill='x', padx=5, pady=5)
-        ttk.Label(header_frame, text="Flower", width=40).pack(side='left', padx=5)
-        ttk.Label(header_frame, text="Count", width=10).pack(side='left', padx=5)
-        ttk.Label(header_frame, text="Price per Unit", width=15).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="פרח", width=40).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="כמות", width=10).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="מחיר ליחידה", width=15).pack(side='left', padx=5)
         
         # Scrollable Area
         canvas = tk.Canvas(frame)
@@ -1196,7 +1309,7 @@ class FlowerApp:
         scrollbar.pack(side="right", fill="y")
         
         # Total Price Label
-        self.total_price_label = ttk.Label(frame, text="Total Price: 0.00", font=('Helvetica', 14, 'bold'))
+        self.total_price_label = ttk.Label(frame, text="סה\"כ מחיר: 0.00", font=('Helvetica', 14, 'bold'))
         self.total_price_label.pack(pady=10)
 
     def refresh_order_pricing_tab(self):
@@ -1264,7 +1377,7 @@ class FlowerApp:
             # Use trace_add instead of trace for newer tkinter, but trace is safer for older
             price_var.trace("w", lambda name, index, mode, v=price_var, k=flower_key, c=count: on_price_change(v, k, c))
             
-        self.total_price_label.config(text=f"Total Price: {grand_total_price:.2f}")
+        self.total_price_label.config(text=f"סה\"כ מחיר: {grand_total_price:.2f}")
 
     def update_total_price(self, total_flowers):
         grand_total = 0.0
@@ -1281,19 +1394,176 @@ class FlowerApp:
                     price = self.default_prices[default_key]
                 
             grand_total += price * count
-        self.total_price_label.config(text=f"Total Price: {grand_total:.2f}")
+        self.total_price_label.config(text=f"סה\"כ מחיר: {grand_total:.2f}")
 
-    def create_global_pricing_tab(self):
-        frame = ttk.Frame(self.notebook)
-        img = self.create_tab_image('silver')
-        self.notebook.add(frame, text="Pricing", image=img, compound='left')
+    def create_summary_tab(self):
+        frame = ttk.Frame(self.left_notebook)
+        img = self.create_tab_image('cyan')
+        self.left_notebook.add(frame, text="סיכום", image=img, compound='left')
         
         # Header
         header_frame = ttk.Frame(frame)
         header_frame.pack(fill='x', padx=5, pady=5)
-        ttk.Label(header_frame, text="Flower", width=40).pack(side='left', padx=5)
-        ttk.Label(header_frame, text="Default Price", width=15).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="זר", width=30).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="כמות", width=10).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="מחיר יח'", width=15).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="סה\"כ", width=15).pack(side='left', padx=5)
         
+        # Scrollable Area
+        canvas = tk.Canvas(frame)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        self.summary_scrollable_frame = ttk.Frame(canvas)
+        
+        self.summary_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        canvas.create_window((0, 0), window=self.summary_scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Footer (Grand Total + Buttons)
+        footer_frame = ttk.Frame(frame)
+        footer_frame.pack(fill='x', padx=5, pady=10)
+        
+        self.summary_total_label = ttk.Label(footer_frame, text="סה\"כ כולל: 0.00", font=('Helvetica', 12, 'bold'))
+        self.summary_total_label.pack(side='left', padx=10)
+        
+        ttk.Button(footer_frame, text="הדפס דוח", command=self.print_summary_report).pack(side='right', padx=5)
+        ttk.Button(footer_frame, text="שמור דוח", command=self.save_summary_report).pack(side='right', padx=5)
+
+    def refresh_summary_tab(self):
+        # Clear existing
+        for widget in self.summary_scrollable_frame.winfo_children():
+            widget.destroy()
+            
+        grand_total = 0.0
+        
+        for bouquet_name, qty in self.current_order:
+            # Calculate unit price for this bouquet
+            unit_price = 0.0
+            try:
+                b = Bouquet(bouquet_name, load_existing=True)
+                counts = b.flower_count()
+                for flower, count in counts.items():
+                    # Get price for this flower
+                    flower_key = f"{flower.name} - {flower.color} - {flower.size}"
+                    f_price = 0.0
+                    if flower_key in self.current_prices:
+                        f_price = self.current_prices[flower_key]
+                    else:
+                        default_key = f"{flower.name} - {flower.size}"
+                        if default_key in self.default_prices:
+                            f_price = self.default_prices[default_key]
+                    
+                    unit_price += f_price * count
+            except Exception as e:
+                print(f"Error calculating price for {bouquet_name}: {e}")
+            
+            total_price = unit_price * qty
+            grand_total += total_price
+            
+            # Display Row
+            row_frame = ttk.Frame(self.summary_scrollable_frame)
+            row_frame.pack(fill='x', pady=2)
+            
+            ttk.Label(row_frame, text=bouquet_name, width=30).pack(side='left', padx=5)
+            ttk.Label(row_frame, text=str(qty), width=10).pack(side='left', padx=5)
+            ttk.Label(row_frame, text=f"{unit_price:.2f}", width=15).pack(side='left', padx=5)
+            ttk.Label(row_frame, text=f"{total_price:.2f}", width=15).pack(side='left', padx=5)
+            
+        self.summary_total_label.config(text=f"סה\"כ כולל: {grand_total:.2f}")
+
+    def generate_summary_text(self):
+        lines = []
+        lines.append("דוח סיכום הזמנה")
+        lines.append(f"תאריך: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        lines.append("-" * 60)
+        lines.append(f"{'זר':<30} | {'כמות':<5} | {'יח\'':<10} | {'סה\"כ':<10}")
+        lines.append("-" * 60)
+        
+        grand_total = 0.0
+        for bouquet_name, qty in self.current_order:
+            unit_price = 0.0
+            try:
+                b = Bouquet(bouquet_name, load_existing=True)
+                counts = b.flower_count()
+                for flower, count in counts.items():
+                    flower_key = f"{flower.name} - {flower.color} - {flower.size}"
+                    f_price = 0.0
+                    if flower_key in self.current_prices:
+                        f_price = self.current_prices[flower_key]
+                    else:
+                        default_key = f"{flower.name} - {flower.size}"
+                        if default_key in self.default_prices:
+                            f_price = self.default_prices[default_key]
+                    unit_price += f_price * count
+            except:
+                pass
+            
+            total_price = unit_price * qty
+            grand_total += total_price
+            
+            lines.append(f"{bouquet_name:<30} | {qty:<5} | {unit_price:<10.2f} | {total_price:<10.2f}")
+            
+        lines.append("-" * 60)
+        lines.append(f"{'סה\"כ כולל':<48} | {grand_total:<10.2f}")
+        return "\n".join(lines)
+
+    def print_summary_report(self):
+        report_text = self.generate_summary_text()
+        
+        # Save to temp file and open
+        filename = "temp_report.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(report_text)
+            
+        try:
+            os.startfile(filename)
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"נכשל בפתיחת הדוח: {e}")
+
+    def save_summary_report(self):
+        timestamp = datetime.now().strftime("%d_%m_%Y")
+        filename = f"Summary_Report_{timestamp}.txt"
+        
+        report_text = self.generate_summary_text()
+        
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(report_text)
+            messagebox.showinfo("הצלחה", f"הדוח נשמר ב-{filename}")
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"נכשל בשמירת הדוח: {e}")
+
+    def create_global_pricing_tab(self):
+        frame = ttk.Frame(self.right_notebook)
+        img = self.create_tab_image('silver')
+        self.right_notebook.add(frame, text="מחירון", image=img, compound='left')
+        
+        # Header
+        header_frame = ttk.Frame(frame)
+        header_frame.pack(fill='x', padx=5, pady=5)
+        ttk.Label(header_frame, text="פרח", width=40).pack(side='left', padx=5)
+        ttk.Label(header_frame, text="מחיר ברירת מחדל", width=15).pack(side='left', padx=5)
+        
+        # Button Frame (Moved to top or bottom with fixed visibility)
+        # We'll put it at the bottom, but ensure it's packed AFTER the canvas with fill='x'
+        # Actually, to ensure it's always visible, we should pack it BEFORE the canvas if we want it top,
+        # or pack it with side='bottom' BEFORE packing the canvas.
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(side='bottom', fill='x', pady=10)
+
+        ttk.Button(btn_frame, text="טען מחירון", command=self.load_default_prices_from_file).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="שמור מחירון", command=self.save_default_prices).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="שמור עם תאריך", command=self.save_timestamped_prices).pack(side='left', padx=5)
+
         # Scrollable Area
         canvas = tk.Canvas(frame)
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
@@ -1306,19 +1576,14 @@ class FlowerApp:
             )
         )
         
-        canvas.create_window((0, 0), window=self.global_pricing_scrollable_frame, anchor="nw")
+        # Ensure the inner frame expands to fill the canvas width
+        canvas.bind('<Configure>', lambda e: canvas.itemconfig(window_id, width=e.width))
+        
+        window_id = canvas.create_window((0, 0), window=self.global_pricing_scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        
-        # Button Frame
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(pady=10)
-
-        ttk.Button(btn_frame, text="Load Default Prices", command=self.load_default_prices_from_file).pack(side='left', padx=5)
-        ttk.Button(btn_frame, text="Save Default Prices", command=self.save_default_prices).pack(side='left', padx=5)
-        ttk.Button(btn_frame, text="Save with Date", command=self.save_timestamped_prices).pack(side='left', padx=5)
 
     def save_timestamped_prices(self):
         timestamp = datetime.now().strftime("%d_%m_%Y")
@@ -1347,14 +1612,14 @@ class FlowerApp:
         df = pd.DataFrame(data, columns=["Flower Name", "Size", "Price"])
         try:
             df.to_excel(filename, index=False)
-            messagebox.showinfo("Success", f"Prices saved to '{filename}'")
+            messagebox.showinfo("הצלחה", f"המחירים נשמרו בקובץ '{filename}'")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save prices: {e}")
+            messagebox.showerror("שגיאה", f"שגיאה בשמירת המחירים: {e}")
 
     def load_default_prices_from_file(self):
         file_path = filedialog.askopenfilename(
-            title="Select Default Prices File",
-            filetypes=[("Excel/JSON Files", "*.xlsx *.json"), ("Excel Files", "*.xlsx"), ("JSON Files", "*.json")]
+            title="בחר קובץ מחירי ברירת מחדל",
+            filetypes=[("קבצי Excel/JSON", "*.xlsx *.json"), ("קבצי Excel", "*.xlsx"), ("קבצי JSON", "*.json")]
         )
         if not file_path:
             return
@@ -1378,7 +1643,7 @@ class FlowerApp:
                             key = f"{row['Flower Name']} - {row['Size']}"
                             new_prices[key] = float(row['Price'])
                      else:
-                         raise ValueError(f"Excel file missing columns. Required: {', '.join(required_cols)}")
+                         raise ValueError(f"חסרות עמודות בקובץ Excel. נדרש: {', '.join(required_cols)}")
 
             elif file_path.lower().endswith('.json'):
                 with open(file_path, "r", encoding="utf-8") as f:
@@ -1419,16 +1684,16 @@ class FlowerApp:
                 self.save_default_prices()
                 self.refresh_global_pricing_tab()
                 
-                msg = f"Loaded/Merged {len(new_prices)} prices."
+                msg = f"נטענו/מוזגו {len(new_prices)} מחירים."
                 if updated_flowers:
-                    msg += f"\n\nAlso added missing sizes for {len(updated_flowers)} flowers."
+                    msg += f"\n\nכמו כן נוספו גדלים חסרים עבור {len(updated_flowers)} פרחים."
                 
-                messagebox.showinfo("Success", msg)
+                messagebox.showinfo("הצלחה", msg)
             else:
-                messagebox.showwarning("Warning", "No valid prices found in file.")
+                messagebox.showwarning("אזהרה", "לא נמצאו מחירים תקינים בקובץ.")
 
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load prices: {e}")
+            messagebox.showerror("שגיאה", f"שגיאה בטעינת המחירים: {e}")
 
     def refresh_global_pricing_tab(self):
         if not hasattr(self, 'global_pricing_scrollable_frame'):
@@ -1489,7 +1754,7 @@ if __name__ == "__main__":
     if not lock_socket:
         root = tk.Tk()
         root.withdraw() # Hide the main window
-        messagebox.showerror("Error", "The application is already running.")
+        messagebox.showerror("שגיאה", "האפליקציה כבר רצה.")
         sys.exit(1)
 
     root = tk.Tk()
