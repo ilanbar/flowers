@@ -5,6 +5,7 @@ import os
 import shutil
 import socket
 import sys
+import pandas as pd
 from datetime import datetime
 from collections import defaultdict
 
@@ -21,14 +22,48 @@ else:
 
 os.chdir(application_path)
 
+def ensure_data_files():
+    """
+    If running as a frozen exe, check if data files exist in the local directory.
+    If not, copy them from the temporary bundle directory (_MEIPASS).
+    """
+    if getattr(sys, 'frozen', False):
+        bundle_dir = sys._MEIPASS
+        files_to_ensure = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+        
+        for filename in files_to_ensure:
+            dest_path = os.path.join(application_path, filename)
+            if not os.path.exists(dest_path):
+                src_path = os.path.join(bundle_dir, filename)
+                if os.path.exists(src_path):
+                    try:
+                        shutil.copy2(src_path, dest_path)
+                    except Exception as e:
+                        print(f"Failed to extract {filename}: {e}")
+
+ensure_data_files()
+
 from flower import FlowersTypes, FlowerColors, FlowerSizes, FlowerData
-from bouquet import Bouquet
+from bouquet import Bouquet, load_all_bouquets
+try:
+    from drive_sync import DriveSync
+    DRIVE_SYNC_AVAILABLE = True
+except ImportError:
+    DRIVE_SYNC_AVAILABLE = False
 
 class FlowerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Flower Shop Manager")
         
+        # Handle Window Close
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        # Drive Sync
+        self.drive_sync = None
+        if DRIVE_SYNC_AVAILABLE:
+            self.drive_sync = DriveSync(application_path)
+
         # Increase font size
         default_font = ('Helvetica', 12)
         self.root.option_add('*Font', default_font)
@@ -38,6 +73,8 @@ class FlowerApp:
         self.flower_types = FlowersTypes()
         self.flower_colors = FlowerColors()
         self.flower_sizes = FlowerSizes()
+        
+        self.displayed_flowers = [] # Keep track of flowers displayed in listbox
         
         self.current_order = []
         self.current_prices = {} # Store price per flower type
@@ -59,17 +96,86 @@ class FlowerApp:
         self.create_colors_tab()
         self.create_global_pricing_tab()
         
+        if self.drive_sync:
+            self.perform_startup_sync()
+        
+    def perform_startup_sync(self):
+        if not os.path.exists(os.path.join(application_path, 'credentials.json')):
+            return
+
+        if messagebox.askyesno("Google Drive Sync", "Do you want to download the latest data from Google Drive?"):
+            try:
+                files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                self.drive_sync.download_files(files_to_sync)
+                self.reload_data()
+                #messagebox.showinfo("Sync", "Download complete. Loading data...")
+            except Exception as e:
+                messagebox.showerror("Sync Error", f"Failed to download from Drive: {e}")
+
+    def on_closing(self):
+        if self.drive_sync and os.path.exists(os.path.join(application_path, 'credentials.json')):
+            if messagebox.askyesno("Google Drive Sync", "Do you want to upload changes to Google Drive before exiting?"):
+                try:
+                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                    self.drive_sync.upload_files(files_to_sync)
+                    # messagebox.showinfo("Sync", "Upload complete.")
+                except Exception as e:
+                    messagebox.showerror("Sync Error", f"Failed to upload to Drive: {e}")
+        
+        self.root.destroy()
+
     def load_default_prices(self):
-        try:
-            with open("DefaultPricing.json", "r", encoding="utf-8") as f:
-                self.default_prices = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            self.default_prices = {}
+        self.default_prices = {}
+        if os.path.exists("DefaultPricing.xlsx"):
+            try:
+                df = pd.read_excel("DefaultPricing.xlsx")
+                # Expected columns: Flower Name, Size, Price
+                for _, row in df.iterrows():
+                    key = f"{row['Flower Name']} - {row['Size']}"
+                    self.default_prices[key] = float(row['Price'])
+            except Exception as e:
+                print(f"Error loading DefaultPricing.xlsx: {e}")
+        elif os.path.exists("DefaultPricing.json"):
+            # Legacy migration (ignoring color)
+            try:
+                with open("DefaultPricing.json", "r", encoding="utf-8") as f:
+                    old_data = json.load(f)
+                    for key, price in old_data.items():
+                        # Old key: Name - Color - Size
+                        parts = key.split(' - ')
+                        if len(parts) == 3:
+                            new_key = f"{parts[0]} - {parts[2]}"
+                            self.default_prices[new_key] = float(price)
+            except (FileNotFoundError, json.JSONDecodeError):
+                self.default_prices = {}
+        
+        # Ensure file is up to date with all combinations
+        self.save_default_prices()
 
     def save_default_prices(self):
+        data = []
+        # Iterate through all defined flowers to ensure complete list
+        for f_name in sorted(self.flower_types.flowers):
+            config = self.flower_types.get_config(f_name)
+            valid_sizes = config.get('sizes', [])
+            
+            # If no specific sizes defined, use all available sizes
+            if not valid_sizes:
+                valid_sizes = self.flower_sizes.sizes
+                
+            for f_size in valid_sizes:
+                key = f"{f_name} - {f_size}"
+                price = self.default_prices.get(key, 0.0)
+                
+                data.append({
+                    "Flower Name": f_name,
+                    "Size": f_size,
+                    "Price": price
+                })
+        
+        df = pd.DataFrame(data, columns=["Flower Name", "Size", "Price"])
         try:
-            with open("DefaultPricing.json", "w", encoding="utf-8") as f:
-                json.dump(self.default_prices, f, ensure_ascii=False, indent=2)
+            df.to_excel("DefaultPricing.xlsx", index=False)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save default prices: {e}")
 
@@ -96,12 +202,12 @@ class FlowerApp:
             backup_dir = os.path.join("backups", timestamp)
             os.makedirs(backup_dir, exist_ok=True)
             
-            files_to_backup = ["Flowers.json", "Colors.json", "Bouquets.json"]
+            files_to_backup = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
             for filename in files_to_backup:
                 if os.path.exists(filename):
                     shutil.copy2(filename, backup_dir)
             
-            messagebox.showinfo("Backup", f"Backup created successfully in:\n{backup_dir}")
+            #messagebox.showinfo("Backup", f"Backup created successfully in:\n{backup_dir}")
         except Exception as e:
             messagebox.showerror("Backup Error", f"Failed to create backup: {e}")
 
@@ -140,7 +246,7 @@ class FlowerApp:
             
             if messagebox.askyesno("Confirm Restore", f"Are you sure you want to restore from '{backup_name}'?\nCurrent data will be overwritten."):
                 try:
-                    files_to_restore = ["Flowers.json", "Colors.json", "Bouquets.json"]
+                    files_to_restore = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
                     for filename in files_to_restore:
                         src = os.path.join(backup_path, filename)
                         if os.path.exists(src):
@@ -157,11 +263,13 @@ class FlowerApp:
     def reload_data(self):
         self.flower_types = FlowersTypes()
         self.flower_colors = FlowerColors()
+        self.load_default_prices()
         # self.flower_sizes is static, no need to reload
         
         self.refresh_flowers_list()
         self.refresh_colors_list()
         self.refresh_bouquets_list()
+        self.refresh_global_pricing_tab()
 
     def create_flowers_tab(self):
         frame = ttk.Frame(self.notebook)
@@ -200,29 +308,19 @@ class FlowerApp:
         selection = self.flowers_listbox.curselection()
         if not selection:
             return
-        name = self.flowers_listbox.get(selection[0])
+        
+        idx = selection[0]
+        if idx < len(self.displayed_flowers):
+            name = self.displayed_flowers[idx]
+        else:
+            return
         
         editor = tk.Toplevel(self.root)
         editor.title(f"Edit Flower: {name}")
-        editor.geometry("400x500")
+        editor.geometry("400x400")
         
         config = self.flower_types.get_config(name)
-        current_colors = set(config.get('colors', []))
         current_sizes = set(config.get('sizes', []))
-        
-        # Colors
-        color_frame = ttk.LabelFrame(editor, text="Allowed Colors")
-        color_frame.pack(fill='both', expand=True, padx=10, pady=5)
-        
-        color_listbox = tk.Listbox(color_frame, selectmode=tk.MULTIPLE, exportselection=False)
-        color_listbox.pack(fill='both', expand=True)
-        
-        all_colors = sorted(self.flower_colors.colors)
-        for i, c in enumerate(all_colors):
-            color_listbox.insert(tk.END, c)
-            # If empty, select all (default)
-            if not current_colors or c in current_colors:
-                color_listbox.selection_set(i)
         
         # Sizes
         size_frame = ttk.LabelFrame(editor, text="Allowed Sizes")
@@ -239,27 +337,28 @@ class FlowerApp:
                 size_listbox.selection_set(i)
                 
         def save_config():
-            selected_colors = [color_listbox.get(i) for i in color_listbox.curselection()]
             selected_sizes = [size_listbox.get(i) for i in size_listbox.curselection()]
             
-            # If user selected ALL, maybe save as empty to mean "All"? 
-            # Or save explicit list. Explicit list is better for "specific" requirement.
-            # But if I save explicit list, and then add a NEW color globally, it won't appear here.
-            # If I save empty, it means "All", so new colors appear automatically.
-            # Let's check if ALL are selected.
-            
-            # Actually, user wants to "specify". So explicit is better.
-            
-            self.flower_types.update_config(name, selected_colors, selected_sizes)
+            self.flower_types.update_config(name, selected_sizes)
             messagebox.showinfo("Success", f"Updated configuration for {name}")
+            self.refresh_flowers_list() # Refresh list to show new config
             editor.destroy()
             
         ttk.Button(editor, text="Save", command=save_config).pack(pady=10)
 
     def refresh_flowers_list(self):
+        if not hasattr(self, 'flowers_listbox'):
+            return
         self.flowers_listbox.delete(0, tk.END)
-        for f in sorted(self.flower_types.flowers):
-            self.flowers_listbox.insert(tk.END, f)
+        self.displayed_flowers = sorted(self.flower_types.flowers)
+        for f in self.displayed_flowers:
+            config = self.flower_types.get_config(f)
+            sizes = config.get('sizes', [])
+            
+            size_str = ",".join(sizes) if sizes else "All"
+            
+            display_text = f"{f} (Sizes: {size_str})"
+            self.flowers_listbox.insert(tk.END, display_text)
 
     def add_flower(self):
         name = self.flower_entry.get().strip()
@@ -274,10 +373,12 @@ class FlowerApp:
     def delete_flower(self):
         selection = self.flowers_listbox.curselection()
         if selection:
-            name = self.flowers_listbox.get(selection[0])
-            if messagebox.askyesno("Confirm", f"Delete flower '{name}'?"):
-                self.flower_types.remove(name)
-                self.refresh_flowers_list()
+            idx = selection[0]
+            if idx < len(self.displayed_flowers):
+                name = self.displayed_flowers[idx]
+                if messagebox.askyesno("Confirm", f"Delete flower '{name}'?"):
+                    self.flower_types.remove(name)
+                    self.refresh_flowers_list()
 
     def create_colors_tab(self):
         frame = ttk.Frame(self.notebook)
@@ -312,6 +413,8 @@ class FlowerApp:
         del_btn.pack(side='left', padx=5)
 
     def refresh_colors_list(self):
+        if not hasattr(self, 'colors_listbox'):
+            return
         self.colors_listbox.delete(0, tk.END)
         for c in sorted(self.flower_colors.colors):
             self.colors_listbox.insert(tk.END, c)
@@ -379,18 +482,22 @@ class FlowerApp:
         
         edit_btn = ttk.Button(btn_frame, text="Edit Name", command=self.edit_bouquet_name)
         edit_btn.pack(side='left', padx=5)
+
+        load_btn = ttk.Button(btn_frame, text="Load Bouquets", command=self.load_bouquets_from_file)
+        load_btn.pack(side='left', padx=5)
         
         self.refresh_bouquets_list()
 
     def get_bouquet_names(self):
         try:
-            with open("Bouquets.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return list(data.keys())
+            all_bouquets = load_all_bouquets()
+            return list(all_bouquets.keys())
         except:
             return []
 
     def refresh_bouquets_list(self):
+        if not hasattr(self, 'bouquets_listbox'):
+            return
         self.bouquets_listbox.delete(0, tk.END)
         names = sorted(self.get_bouquet_names())
         for name in names:
@@ -411,7 +518,7 @@ class FlowerApp:
                 b.save() # Save the new bouquet
                 self.bouquet_name_entry.delete(0, tk.END)
                 self.refresh_bouquets_list()
-                messagebox.showinfo("Success", f"Bouquet '{b.name}' created.")
+                # messagebox.showinfo("Success", f"Bouquet '{b.name}' created.")
             except ValueError as e:
                 messagebox.showerror("Error", str(e))
             except Exception as e:
@@ -441,11 +548,65 @@ class FlowerApp:
                     try:
                         Bouquet.rename_bouquet(old_name, new_name)
                         self.refresh_bouquets_list()
-                        messagebox.showinfo("Success", f"Renamed '{old_name}' to '{new_name}'.")
+                        # messagebox.showinfo("Success", f"Renamed '{old_name}' to '{new_name}'.")
                     except ValueError as e:
                         messagebox.showerror("Error", str(e))
                     except Exception as e:
                         messagebox.showerror("Error", f"An error occurred: {e}")
+
+    def load_bouquets_from_file(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Bouquets File",
+            filetypes=[("Excel/JSON Files", "*.xlsx *.json"), ("Excel Files", "*.xlsx"), ("JSON Files", "*.json")]
+        )
+        if not file_path:
+            return
+
+        try:
+            new_bouquets = {}
+            if file_path.lower().endswith('.xlsx'):
+                df = pd.read_excel(file_path)
+                # Expected columns: Bouquet Name, Flower Name, Color, Size, Count
+                required_cols = ["Bouquet Name", "Flower Name", "Color", "Size", "Count"]
+                
+                if not df.empty:
+                    # Check if columns exist
+                    missing = [col for col in required_cols if col not in df.columns]
+                    if missing:
+                         raise ValueError(f"Excel file missing columns: {', '.join(missing)}")
+
+                    grouped = df.groupby("Bouquet Name")
+                    for name, group in grouped:
+                        flowers = []
+                        for _, row in group.iterrows():
+                            f_name = row["Flower Name"]
+                            f_color = row["Color"]
+                            f_size = row["Size"]
+                            count = int(row["Count"])
+                            flower = FlowerData(f_name, f_color, f_size)
+                            flowers.extend([flower] * count)
+                        new_bouquets[name] = flowers
+            elif file_path.lower().endswith('.json'):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for name, flist in data.items():
+                        # flist is list of [name, color, size]
+                        new_bouquets[name] = [FlowerData(*f) for f in flist]
+            
+            if new_bouquets:
+                # Merge with existing
+                from bouquet import load_all_bouquets, save_all_bouquets
+                current_bouquets = load_all_bouquets()
+                current_bouquets.update(new_bouquets)
+                save_all_bouquets(current_bouquets)
+                
+                self.refresh_bouquets_list()
+                messagebox.showinfo("Success", f"Loaded/Merged {len(new_bouquets)} bouquets.")
+            else:
+                messagebox.showwarning("Warning", "No bouquets found in file.")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load bouquets: {e}")
 
     def open_bouquet_editor(self, event):
         selection = self.bouquets_listbox.curselection()
@@ -461,7 +622,7 @@ class FlowerApp:
 
         editor = tk.Toplevel(self.root)
         editor.title(f"Edit Bouquet: {name}")
-        editor.geometry("600x500")
+        # Auto-size to fit contents
         
         # Left: List of flowers
         list_frame = ttk.LabelFrame(editor, text="Flowers in Bouquet")
@@ -512,11 +673,10 @@ class FlowerApp:
             if not f_name: return
             
             config = self.flower_types.get_config(f_name)
-            valid_colors = config.get('colors', [])
             valid_sizes = config.get('sizes', [])
             
-            if not valid_colors: valid_colors = sorted(self.flower_colors.colors)
-            else: valid_colors = [c for c in valid_colors if c in self.flower_colors.colors]
+            # Colors are now unrestricted per flower type
+            valid_colors = sorted(self.flower_colors.colors)
             
             if not valid_sizes: valid_sizes = self.flower_sizes.sizes
             
@@ -658,11 +818,10 @@ class FlowerApp:
                 
                 # Update values based on flower type
                 config = self.flower_types.get_config(flower.name)
-                valid_colors = config.get('colors', [])
                 valid_sizes = config.get('sizes', [])
                 
-                if not valid_colors: valid_colors = sorted(self.flower_colors.colors)
-                else: valid_colors = [c for c in valid_colors if c in self.flower_colors.colors]
+                # Colors are unrestricted
+                valid_colors = sorted(self.flower_colors.colors)
                 
                 if not valid_sizes: valid_sizes = self.flower_sizes.sizes
                 
@@ -834,19 +993,36 @@ class FlowerApp:
         
         orders_dir = "orders"
         os.makedirs(orders_dir, exist_ok=True)
-        filepath = os.path.join(orders_dir, f"{filename}.json")
+        filepath = os.path.join(orders_dir, f"{filename}.xlsx")
         
         if os.path.exists(filepath):
             if not messagebox.askyesno("Confirm Overwrite", f"Order '{filename}' already exists. Overwrite?"):
                 return
         
         try:
-            data = {
-                "order": self.current_order,
-                "prices": self.current_prices
-            }
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            # Sheet 1: Order
+            order_data = []
+            for b_name, qty in self.current_order:
+                order_data.append({"Bouquet Name": b_name, "Quantity": qty})
+            df_order = pd.DataFrame(order_data)
+            
+            # Sheet 2: Prices
+            price_data = []
+            for key, price in self.current_prices.items():
+                parts = key.split(' - ')
+                if len(parts) == 3:
+                    price_data.append({
+                        "Flower Name": parts[0],
+                        "Color": parts[1],
+                        "Size": parts[2],
+                        "Price": price
+                    })
+            df_prices = pd.DataFrame(price_data)
+            
+            with pd.ExcelWriter(filepath) as writer:
+                df_order.to_excel(writer, sheet_name="Order", index=False)
+                df_prices.to_excel(writer, sheet_name="Prices", index=False)
+                
             # messagebox.showinfo("Success", f"Order saved to '{filepath}'.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save order: {e}")
@@ -858,8 +1034,8 @@ class FlowerApp:
             messagebox.showinfo("Info", "No orders found.")
             return
 
-        # Get list of json files sorted by modification time (newest first)
-        files = [f for f in os.listdir(orders_dir) if f.endswith('.json')]
+        # Get list of xlsx files (and json for backward compat)
+        files = [f for f in os.listdir(orders_dir) if f.endswith('.xlsx') or f.endswith('.json')]
         if not files:
             messagebox.showinfo("Info", "No orders found.")
             return
@@ -890,30 +1066,51 @@ class FlowerApp:
             dialog.destroy()
             
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                loaded_order = []
-                loaded_prices = {}
-
-                if isinstance(data, list):
-                    # Old format
-                    loaded_order = data
-                elif isinstance(data, dict) and "order" in data:
-                    # New format
-                    loaded_order = data["order"]
-                    loaded_prices = data.get("prices", {})
+                if filename.endswith('.json'):
+                    # Legacy load
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
                     
-                # Validate data format (list of [name, qty])
-                if isinstance(loaded_order, list) and all(isinstance(item, list) and len(item) == 2 for item in loaded_order):
-                    self.current_order = [tuple(item) for item in loaded_order]
-                    self.current_prices = loaded_prices
+                    loaded_order = []
+                    loaded_prices = {}
+
+                    if isinstance(data, list):
+                        # Old format
+                        loaded_order = data
+                    elif isinstance(data, dict) and "order" in data:
+                        # New format
+                        loaded_order = data["order"]
+                        loaded_prices = data.get("prices", {})
+                        
+                    # Validate data format (list of [name, qty])
+                    if isinstance(loaded_order, list) and all(isinstance(item, list) and len(item) == 2 for item in loaded_order):
+                        self.current_order = [tuple(item) for item in loaded_order]
+                        self.current_prices = loaded_prices
+                        self.order_listbox.delete(0, tk.END)
+                        for name, qty in self.current_order:
+                            self.order_listbox.insert(tk.END, f"{name} (x{qty})")
+                    else:
+                        messagebox.showerror("Error", "Invalid order file format.")
+                else:
+                    # Excel load
+                    df_order = pd.read_excel(filepath, sheet_name="Order")
+                    self.current_order = []
+                    for _, row in df_order.iterrows():
+                        self.current_order.append((row["Bouquet Name"], int(row["Quantity"])))
+                    
+                    self.current_prices = {}
+                    try:
+                        df_prices = pd.read_excel(filepath, sheet_name="Prices")
+                        for _, row in df_prices.iterrows():
+                            key = f"{row['Flower Name']} - {row['Color']} - {row['Size']}"
+                            self.current_prices[key] = float(row['Price'])
+                    except:
+                        pass # Prices sheet might not exist or be empty
+                    
                     self.order_listbox.delete(0, tk.END)
                     for name, qty in self.current_order:
                         self.order_listbox.insert(tk.END, f"{name} (x{qty})")
-                    #messagebox.showinfo("Success", f"Order '{filename}' loaded.")
-                else:
-                    messagebox.showerror("Error", "Invalid order file format.")
+
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load order: {e}")
 
@@ -1035,12 +1232,14 @@ class FlowerApp:
             
             price_var = tk.StringVar()
             
-            # Determine price: Order Specific > Default > 0
+            # Determine price: Order Specific > Default (Name-Size) > 0
             current_price = 0.0
             if flower_key in self.current_prices:
                 current_price = self.current_prices[flower_key]
-            elif flower_key in self.default_prices:
-                current_price = self.default_prices[flower_key]
+            else:
+                default_key = f"{flower.name} - {flower.size}"
+                if default_key in self.default_prices:
+                    current_price = self.default_prices[default_key]
             
             price_var.set(str(current_price))
             grand_total_price += float(current_price) * count
@@ -1072,12 +1271,14 @@ class FlowerApp:
         for flower, count in total_flowers.items():
             flower_key = f"{flower.name} - {flower.color} - {flower.size}"
             
-            # Priority: Order Specific > Default > 0
+            # Priority: Order Specific > Default (Name-Size) > 0
             price = 0.0
             if flower_key in self.current_prices:
                 price = self.current_prices[flower_key]
-            elif flower_key in self.default_prices:
-                price = self.default_prices[flower_key]
+            else:
+                default_key = f"{flower.name} - {flower.size}"
+                if default_key in self.default_prices:
+                    price = self.default_prices[default_key]
                 
             grand_total += price * count
         self.total_price_label.config(text=f"Total Price: {grand_total:.2f}")
@@ -1111,28 +1312,141 @@ class FlowerApp:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # Save Button
-        ttk.Button(frame, text="Save Default Prices", command=self.save_default_prices).pack(pady=10)
+        # Button Frame
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(pady=10)
+
+        ttk.Button(btn_frame, text="Load Default Prices", command=self.load_default_prices_from_file).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Save Default Prices", command=self.save_default_prices).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Save with Date", command=self.save_timestamped_prices).pack(side='left', padx=5)
+
+    def save_timestamped_prices(self):
+        timestamp = datetime.now().strftime("%d_%m_%Y")
+        filename = f"DefaultPricing_{timestamp}.xlsx"
+        
+        data = []
+        # Iterate through all defined flowers to ensure complete list
+        for f_name in sorted(self.flower_types.flowers):
+            config = self.flower_types.get_config(f_name)
+            valid_sizes = config.get('sizes', [])
+            
+            # If no specific sizes defined, use all available sizes
+            if not valid_sizes:
+                valid_sizes = self.flower_sizes.sizes
+                
+            for f_size in valid_sizes:
+                key = f"{f_name} - {f_size}"
+                price = self.default_prices.get(key, 0.0)
+                
+                data.append({
+                    "Flower Name": f_name,
+                    "Size": f_size,
+                    "Price": price
+                })
+        
+        df = pd.DataFrame(data, columns=["Flower Name", "Size", "Price"])
+        try:
+            df.to_excel(filename, index=False)
+            messagebox.showinfo("Success", f"Prices saved to '{filename}'")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save prices: {e}")
+
+    def load_default_prices_from_file(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Default Prices File",
+            filetypes=[("Excel/JSON Files", "*.xlsx *.json"), ("Excel Files", "*.xlsx"), ("JSON Files", "*.json")]
+        )
+        if not file_path:
+            return
+
+        try:
+            new_prices = {}
+            if file_path.lower().endswith('.xlsx'):
+                df = pd.read_excel(file_path)
+                # Expected columns: Flower Name, Size, Price
+                
+                required_cols = ["Flower Name", "Size", "Price"]
+                # Check if columns exist
+                if all(col in df.columns for col in required_cols):
+                    for _, row in df.iterrows():
+                        key = f"{row['Flower Name']} - {row['Size']}"
+                        new_prices[key] = float(row['Price'])
+                else:
+                     # Try legacy format with Color?
+                     if "Color" in df.columns and "Flower Name" in df.columns and "Size" in df.columns and "Price" in df.columns:
+                         for _, row in df.iterrows():
+                            key = f"{row['Flower Name']} - {row['Size']}"
+                            new_prices[key] = float(row['Price'])
+                     else:
+                         raise ValueError(f"Excel file missing columns. Required: {', '.join(required_cols)}")
+
+            elif file_path.lower().endswith('.json'):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for key, price in data.items():
+                        # Key format: "Flower - Size" or "Flower - Color - Size"
+                        parts = key.split(' - ')
+                        if len(parts) == 2:
+                            new_prices[key] = float(price)
+                        elif len(parts) == 3:
+                            # Legacy: Flower - Color - Size -> Flower - Size
+                            new_key = f"{parts[0]} - {parts[2]}"
+                            new_prices[new_key] = float(price)
+            
+            if new_prices:
+                # Auto-update flower sizes if needed
+                updated_flowers = set()
+                for key in new_prices:
+                    # key is "Name - Size"
+                    parts = key.rsplit(' - ', 1)
+                    if len(parts) == 2:
+                        f_name, f_size = parts
+                        if self.flower_types.contains(f_name):
+                            config = self.flower_types.get_config(f_name)
+                            current_sizes = config.get('sizes', [])
+                            # If sizes are restricted (not empty) and this size is missing
+                            if current_sizes and f_size not in current_sizes:
+                                current_sizes.append(f_size)
+                                self.flower_types.update_config(f_name, current_sizes)
+                                updated_flowers.add(f_name)
+                
+                if updated_flowers:
+                    # Refresh flowers tab if it exists
+                    if hasattr(self, 'refresh_flowers_list'):
+                        self.refresh_flowers_list()
+
+                self.default_prices.update(new_prices)
+                self.save_default_prices()
+                self.refresh_global_pricing_tab()
+                
+                msg = f"Loaded/Merged {len(new_prices)} prices."
+                if updated_flowers:
+                    msg += f"\n\nAlso added missing sizes for {len(updated_flowers)} flowers."
+                
+                messagebox.showinfo("Success", msg)
+            else:
+                messagebox.showwarning("Warning", "No valid prices found in file.")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load prices: {e}")
 
     def refresh_global_pricing_tab(self):
+        if not hasattr(self, 'global_pricing_scrollable_frame'):
+            return
         # Clear existing rows
         for widget in self.global_pricing_scrollable_frame.winfo_children():
             widget.destroy()
             
-        # Generate all combinations of existing flowers, colors, and sizes
+        # Generate all combinations of existing flowers and sizes (ignoring colors)
         all_combinations = []
         for f_name in sorted(self.flower_types.flowers):
             config = self.flower_types.get_config(f_name)
-            valid_colors = config.get('colors', [])
             valid_sizes = config.get('sizes', [])
             
-            if not valid_colors: valid_colors = sorted(self.flower_colors.colors)
             if not valid_sizes: valid_sizes = self.flower_sizes.sizes
             
-            for f_color in valid_colors:
-                if f_color not in self.flower_colors.colors: continue
-                for f_size in valid_sizes:
-                    all_combinations.append(f"{f_name} - {f_color} - {f_size}")
+            for f_size in valid_sizes:
+                all_combinations.append(f"{f_name} - {f_size}")
         
         for flower_key in all_combinations:
             row_frame = ttk.Frame(self.global_pricing_scrollable_frame)
