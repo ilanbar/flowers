@@ -203,7 +203,7 @@ class DriveSync:
             if mime_type == 'application/vnd.google-apps.folder':
                 if name == 'orders':
                     self._download_folder(file_id, os.path.join(self.local_dir, orders_dir))
-            elif name in files_to_sync:
+            elif name in files_to_sync or (name.startswith("DefaultPricing_") and name.endswith(".xlsx")):
                 dest_path = os.path.join(self.local_dir, name)
                 self._download_single_file(file_id, dest_path)
 
