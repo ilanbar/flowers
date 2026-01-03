@@ -48,6 +48,7 @@ ensure_data_files()
 
 from flower import FlowersTypes, FlowerColors, FlowerSizes, FlowerData
 from bouquet import Bouquet, load_all_bouquets
+from wix import WixInventoryManager
 try:
     from drive_sync import DriveSync
     DRIVE_SYNC_AVAILABLE = True
@@ -84,6 +85,11 @@ class FlowerApp:
         self.default_prices = {} # Store default prices
         self.load_default_prices()
         
+        self.wix_categories = []
+        self.selected_wix_category_ids = []
+        self.category_tabs = {} # Map category_id -> tab frame
+        self.load_wix_config()
+        
         self.tab_images = [] # Keep references to images
 
         self.create_menu()
@@ -117,6 +123,7 @@ class FlowerApp:
         self.create_flowers_tab()
         self.create_colors_tab()
         self.create_global_pricing_tab()
+        self.create_wix_categories_tab()
         
         if self.drive_sync:
             self.perform_startup_sync()
@@ -151,7 +158,7 @@ class FlowerApp:
             
             def run_sync_thread():
                 try:
-                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx", "WixConfig.json"]
                     self.drive_sync.download_files(files_to_sync)
                 except Exception as e:
                     sync_result["error"] = e
@@ -181,6 +188,8 @@ class FlowerApp:
             if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להעלות שינויים ל-Google Drive?"):
                 try:
                     files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                    if os.path.exists("WixConfig.json"):
+                        files_to_sync.append("WixConfig.json")
                     files_to_sync.extend([f for f in os.listdir('.') if f.startswith('DefaultPricing_') and f.endswith('.xlsx')])
                     self.drive_sync.upload_files(files_to_sync)
                     messagebox.showinfo("Sync", "הסנכרון הושלם בהצלחה.")
@@ -190,10 +199,22 @@ class FlowerApp:
              messagebox.showinfo("סנכרון Google Drive", "סנכרון אינו זמין (חסר credentials.json או drive_sync.py)")
 
     def on_closing(self):
+        if getattr(self, 'wix_dirty', False):
+             if messagebox.askyesno("שינויים לא שמורים", "ישנם שינויים לא שמורים בקטגוריות Wix. האם לשמור אותם?"):
+                 try:
+                    self.save_wix_selection(silent=True)
+                 except Exception as e:
+                    print(f"Error saving Wix selection: {e}")
+        
+        # Allow UI to update
+        self.root.update()
+
         if self.drive_sync and os.path.exists(os.path.join(application_path, 'credentials.json')):
             if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להעלות שינויים ל-Google Drive לפני היציאה?"):
                 try:
                     files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                    if os.path.exists("WixConfig.json"):
+                        files_to_sync.append("WixConfig.json")
                     files_to_sync.extend([f for f in os.listdir('.') if f.startswith('DefaultPricing_') and f.endswith('.xlsx')])
                     self.drive_sync.upload_files(files_to_sync)
                     # messagebox.showinfo("Sync", "Upload complete.")
@@ -263,6 +284,24 @@ class FlowerApp:
                 })
         
         df = pd.DataFrame(data, columns=["Flower Name", "Size", "Price"])
+        
+        # Check if file exists and content is identical to avoid unnecessary writes (and syncs)
+        if os.path.exists("DefaultPricing.xlsx"):
+            try:
+                existing_df = pd.read_excel("DefaultPricing.xlsx")
+                
+                # Sort both to ensure order doesn't affect comparison
+                df_sorted = df.sort_values(by=["Flower Name", "Size"]).reset_index(drop=True)
+                existing_sorted = existing_df.sort_values(by=["Flower Name", "Size"]).reset_index(drop=True)
+                
+                # Check if identical
+                # We use a small tolerance for floats if needed, but usually exact match works for prices
+                if df_sorted.equals(existing_sorted):
+                    return
+            except Exception:
+                # If read fails or comparison fails, proceed to save
+                pass
+
         try:
             df.to_excel("DefaultPricing.xlsx", index=False)
         except Exception as e:
@@ -293,7 +332,7 @@ class FlowerApp:
 
         file_menu.add_separator()
         file_menu.add_command(label="פתח תיקיה", command=self.open_app_folder)
-        file_menu.add_command(label="יציאה", command=self.root.quit)
+        file_menu.add_command(label="יציאה", command=self.on_closing)
 
         # Help Menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -1831,6 +1870,239 @@ class FlowerApp:
                     pass
             
             price_var.trace("w", lambda name, index, mode, v=price_var, k=flower_key: on_default_price_change(v, k))
+
+    def load_wix_config(self):
+        self.selected_wix_category_ids = []
+        self.wix_dirty = False
+        if os.path.exists("WixConfig.json"):
+            try:
+                with open("WixConfig.json", "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.selected_wix_category_ids = data.get("selected_category_ids", [])
+            except Exception as e:
+                print(f"Error loading WixConfig.json: {e}")
+
+    def save_wix_config(self):
+        data = {
+            "selected_category_ids": self.selected_wix_category_ids
+        }
+        try:
+            with open("WixConfig.json", "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"שגיאה בשמירת הגדרות Wix: {e}")
+
+    def create_wix_categories_tab(self):
+        frame = ttk.Frame(self.right_notebook)
+        img = self.create_tab_image('lightgreen')
+        self.right_notebook.add(frame, text="קטגוריות Wix", image=img, compound='left')
+        
+        # Top controls
+        controls = ttk.Frame(frame)
+        controls.pack(fill='x', padx=5, pady=5)
+        
+        fetch_btn = ttk.Button(controls, text="רענן קטגוריות", command=lambda: self.fetch_wix_categories(silent=False))
+        fetch_btn.pack(side='left', padx=5)
+        
+        save_btn = ttk.Button(controls, text="שמור בחירה", command=self.save_wix_selection)
+        save_btn.pack(side='left', padx=5)
+
+        # Checkbox list
+        list_frame = ttk.Frame(frame)
+        list_frame.pack(expand=True, fill='both', padx=5, pady=5)
+        
+        # Canvas and Scrollbar for scrolling checkboxes
+        self.wix_canvas = tk.Canvas(list_frame)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.wix_canvas.yview)
+        self.wix_scrollable_frame = ttk.Frame(self.wix_canvas)
+
+        self.wix_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.wix_canvas.configure(
+                scrollregion=self.wix_canvas.bbox("all")
+            )
+        )
+
+        self.wix_canvas.create_window((0, 0), window=self.wix_scrollable_frame, anchor="nw")
+        self.wix_canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.wix_canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        self.wix_category_vars = {} # Map category ID to BooleanVar
+        
+        # Auto-load categories
+        self.root.after(500, lambda: self.fetch_wix_categories(silent=True))
+
+    def fetch_wix_categories(self, silent=False):
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            if not silent:
+                messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json או שהוא לא תקין.")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            collections = manager.get_collections()
+            
+            if not collections:
+                if not silent:
+                    messagebox.showinfo("מידע", "לא נמצאו קטגוריות.")
+                return
+                
+            self.wix_categories = collections
+            self.refresh_wix_categories_list()
+            self.update_category_tabs()
+            if not silent:
+                messagebox.showinfo("הצלחה", f"נטענו {len(collections)} קטגוריות.")
+            
+        except Exception as e:
+            if not silent:
+                messagebox.showerror("שגיאה", f"שגיאה בטעינת קטגוריות: {e}")
+            else:
+                print(f"Error fetching Wix categories: {e}")
+
+    def refresh_wix_categories_list(self):
+        # Clear existing
+        for widget in self.wix_scrollable_frame.winfo_children():
+            widget.destroy()
+        self.wix_category_vars = {}
+        
+        for col in self.wix_categories:
+            col_id = col.get('id')
+            col_name = col.get('name')
+            
+            var = tk.BooleanVar(value=(col_id in self.selected_wix_category_ids))
+            self.wix_category_vars[col_id] = var
+            
+            chk = ttk.Checkbutton(self.wix_scrollable_frame, text=col_name, variable=var, command=self.on_wix_change)
+            chk.pack(anchor='w', padx=5, pady=2)
+
+    def on_wix_change(self):
+        self.wix_dirty = True
+
+    def save_wix_selection(self, silent=False):
+        self.selected_wix_category_ids = []
+        for col_id, var in self.wix_category_vars.items():
+            if var.get():
+                self.selected_wix_category_ids.append(col_id)
+        
+        self.save_wix_config()
+        self.update_category_tabs()
+        self.wix_dirty = False
+        if not silent:
+            messagebox.showinfo("שמירה", "הבחירה נשמרה בהצלחה.")
+
+    def update_category_tabs(self):
+        # Map current categories
+        cat_map = {c['id']: c['name'] for c in self.wix_categories}
+        
+        # Identify tabs to keep/create
+        active_ids = set(self.selected_wix_category_ids)
+        current_tab_ids = set(self.category_tabs.keys())
+        
+        # Remove tabs for unselected categories
+        for cid in current_tab_ids - active_ids:
+            tab = self.category_tabs[cid]
+            self.right_notebook.forget(tab)
+            tab.destroy()
+            del self.category_tabs[cid]
+            
+        # Create tabs for new selections
+        for cid in active_ids:
+            if cid not in self.category_tabs and cid in cat_map:
+                self.create_category_tab(cid, cat_map[cid])
+
+    def create_category_tab(self, category_id, category_name):
+        frame = ttk.Frame(self.right_notebook)
+        # Use a generic image or specific one if available
+        img = self.create_tab_image('lightblue') 
+        self.right_notebook.add(frame, text=category_name, image=img, compound='left')
+        self.category_tabs[category_id] = frame
+        
+        # Controls
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill='x', padx=5, pady=5)
+        
+        refresh_btn = ttk.Button(btn_frame, text="טען/רענן מוצרים", 
+                                 command=lambda cid=category_id: self.load_products_for_tab(cid))
+        refresh_btn.pack(side='right')
+        
+        # Treeview
+        columns = ("name", "sku", "price", "stock")
+        tree = ttk.Treeview(frame, columns=columns, show='headings')
+        tree.heading("name", text="שם מוצר")
+        tree.heading("sku", text="מק\"ט")
+        tree.heading("price", text="מחיר")
+        tree.heading("stock", text="מלאי")
+        
+        tree.column("name", width=200)
+        tree.column("sku", width=100)
+        tree.column("price", width=80)
+        tree.column("stock", width=80)
+        
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        frame.tree = tree
+        
+        # Auto-load products
+        self.load_products_for_tab(category_id)
+
+    def load_products_for_tab(self, category_id):
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        frame = self.category_tabs.get(category_id)
+        if not frame: return
+        
+        tree = frame.tree
+        
+        # Clear existing
+        for item in tree.get_children():
+            tree.delete(item)
+            
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            # Use query_products_by_collection
+            result = manager.query_products_by_collection(category_id, limit=100)
+            
+            if result and 'products' in result:
+                products = result['products']
+                for p in products:
+                    name = p.get('name', 'Unknown')
+                    sku = p.get('sku', '')
+                    price = p.get('price', {}).get('value', '0')
+                    
+                    stock_status = "In Stock" if p.get('stock', {}).get('inStock', False) else "Out of Stock"
+                    
+                    tree.insert("", tk.END, values=(name, sku, price, stock_status))
+                
+                # messagebox.showinfo("הצלחה", f"נטענו {len(products)} מוצרים.")
+            else:
+                messagebox.showinfo("מידע", "לא נמצאו מוצרים או שגיאה בטעינה.")
+                
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"שגיאה בטעינת מוצרים: {e}")
 
 def check_single_instance():
     try:

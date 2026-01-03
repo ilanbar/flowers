@@ -11,3 +11,5 @@ token.json
 *.xlsx
 Orders/
 FlowerShopManager_new.exe
+WixConfig.json
+wix_token.json

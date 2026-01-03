@@ -1,6 +1,7 @@
 import os
 import os.path
 import pickle
+import hashlib
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -23,6 +24,13 @@ class DriveSync:
         self.folder_name = "FlowerShopData"
         self.folder_id = None
         
+    def get_local_md5(self, fname):
+        hash_md5 = hashlib.md5()
+        with open(fname, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
     def authenticate(self):
         """Shows basic usage of the Drive v3 API.
         """
@@ -173,21 +181,31 @@ class DriveSync:
             return items[0]['id']
 
     def _upload_single_file(self, filename, filepath, parent_id):
-        print(f"Uploading {filename}...")
         # Check if file exists in Drive folder
         query = f"name='{filename}' and '{parent_id}' in parents and trashed=false"
-        results = self.service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+        results = self.service.files().list(q=query, spaces='drive', fields='files(id, name, md5Checksum)').execute()
         items = results.get('files', [])
         
-        media = MediaFileUpload(filepath, resumable=True)
-        
         if items:
+            # File exists remotely, check MD5
+            remote_file = items[0]
+            remote_md5 = remote_file.get('md5Checksum')
+            local_md5 = self.get_local_md5(filepath)
+            
+            if remote_md5 == local_md5:
+                print(f"Skipping {filename} (unchanged)")
+                return
+
             # Update
-            file_id = items[0]['id']
+            print(f"Updating {filename}...")
+            file_id = remote_file['id']
+            media = MediaFileUpload(filepath, resumable=True)
             self.service.files().update(fileId=file_id, media_body=media).execute()
             print(f"Updated {filename}")
         else:
             # Create
+            print(f"Uploading new file {filename}...")
+            media = MediaFileUpload(filepath, resumable=True)
             file_metadata = {'name': filename, 'parents': [parent_id]}
             self.service.files().create(body=file_metadata, media_body=media, fields='id').execute()
             print(f"Created {filename}")
@@ -202,20 +220,30 @@ class DriveSync:
         # 1. Download root files
         # List all files in the folder
         query = f"'{folder_id}' in parents and trashed=false"
-        results = self.service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)').execute()
+        results = self.service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType, md5Checksum)').execute()
         items = results.get('files', [])
         
         for item in items:
             name = item['name']
             file_id = item['id']
             mime_type = item['mimeType']
+            remote_md5 = item.get('md5Checksum')
             
             if mime_type == 'application/vnd.google-apps.folder':
                 if name == 'orders':
                     self._download_folder(file_id, os.path.join(self.local_dir, orders_dir))
             elif name in files_to_sync or (name.startswith("DefaultPricing_") and name.endswith(".xlsx")):
                 dest_path = os.path.join(self.local_dir, name)
-                self._download_single_file(file_id, dest_path)
+                
+                # Only download if exists locally
+                if os.path.exists(dest_path):
+                    local_md5 = self.get_local_md5(dest_path)
+                    if remote_md5 and local_md5 == remote_md5:
+                        print(f"Skipping download of {name} (unchanged)")
+                    else:
+                        self._download_single_file(file_id, dest_path)
+                else:
+                    print(f"Skipping download of {name} (does not exist locally)")
 
     def download_file_as(self, remote_filename, local_filename):
         if not self.service:
@@ -243,11 +271,21 @@ class DriveSync:
             os.makedirs(local_dest_dir)
             
         query = f"'{folder_id}' in parents and trashed=false"
-        results = self.service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+        results = self.service.files().list(q=query, spaces='drive', fields='files(id, name, md5Checksum)').execute()
         items = results.get('files', [])
         
         for item in items:
-            self._download_single_file(item['id'], os.path.join(local_dest_dir, item['name']))
+            local_file_path = os.path.join(local_dest_dir, item['name'])
+            remote_md5 = item.get('md5Checksum')
+            
+            if os.path.exists(local_file_path):
+                local_md5 = self.get_local_md5(local_file_path)
+                if remote_md5 and local_md5 == remote_md5:
+                    print(f"Skipping download of {item['name']} (unchanged)")
+                else:
+                    self._download_single_file(item['id'], local_file_path)
+            else:
+                print(f"Skipping download of {item['name']} (does not exist locally)")
 
     def _download_single_file(self, file_id, dest_path):
         print(f"Downloading to {dest_path}...")
