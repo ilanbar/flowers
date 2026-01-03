@@ -7,3 +7,7 @@ build/
 
 credentials.json
 token.json
+
+*.xlsx
+Orders/
+FlowerShopManager_new.exe
