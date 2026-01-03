@@ -146,6 +146,16 @@ class DriveSync:
                     filepath = os.path.join(local_orders_path, filename)
                     self._upload_single_file(filename, filepath, orders_folder_id)
 
+    def upload_file(self, filepath, remote_filename=None):
+        if not self.service:
+            if not self.authenticate():
+                return
+
+        folder_id = self.get_folder_id()
+        filename = remote_filename if remote_filename else os.path.basename(filepath)
+        
+        self._upload_single_file(filename, filepath, folder_id)
+
     def _get_or_create_subfolder(self, name, parent_id):
         query = f"name='{name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         results = self.service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()

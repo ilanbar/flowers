@@ -5,6 +5,7 @@ import os
 import shutil
 import socket
 import sys
+import subprocess
 import pandas as pd
 from datetime import datetime
 from collections import defaultdict
@@ -242,10 +243,59 @@ class FlowerApp:
         
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="קובץ", menu=file_menu)
-        file_menu.add_command(label="Sync to Drive", command=self.sync_to_drive)
+        file_menu.add_command(label="שמור ל-Drive", command=self.sync_to_drive)
         file_menu.add_command(label="הורד גירסה", command=self.download_new_version)
+        
+        # Developer options (only if not frozen)
+        if not getattr(sys, 'frozen', False):
+            file_menu.add_separator()
+            file_menu.add_command(label="בנה גירסה", command=self.build_version)
+            file_menu.add_command(label="העלה גירסה", command=self.upload_version)
+
         file_menu.add_separator()
         file_menu.add_command(label="יציאה", command=self.root.quit)
+
+    def build_version(self):
+        if messagebox.askyesno("בנה גירסה", "האם לבנות גירסה חדשה? (התהליך עשוי לקחת זמן)"):
+            try:
+                # Run powershell script
+                cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", "build_exe.ps1"]
+                
+                # Show a wait window
+                wait_window = tk.Toplevel(self.root)
+                wait_window.title("בונה גירסה...")
+                wait_window.geometry("300x100")
+                tk.Label(wait_window, text="אנא המתן, בונה גירסה...\nזה עשוי לקחת דקה או שתיים.").pack(expand=True)
+                wait_window.update()
+                
+                # Run process
+                result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                
+                wait_window.destroy()
+                
+                if result.returncode == 0:
+                    messagebox.showinfo("הצלחה", "הבנייה הסתיימה בהצלחה.\nהקובץ נמצא בתיקיית dist.")
+                else:
+                    messagebox.showerror("שגיאה", f"הבנייה נכשלה:\n{result.stderr}\n{result.stdout}")
+            except Exception as e:
+                messagebox.showerror("שגיאה", f"שגיאה בהרצת הבנייה: {e}")
+
+    def upload_version(self):
+        exe_path = os.path.join(application_path, "dist", "FlowerShopManager.exe")
+        if not os.path.exists(exe_path):
+             messagebox.showerror("שגיאה", "לא נמצא קובץ exe בתיקיית dist.\nיש לבנות גירסה קודם.")
+             return
+             
+        if not self.drive_sync:
+             messagebox.showerror("שגיאה", "סנכרון אינו זמין.")
+             return
+
+        if messagebox.askyesno("העלה גירסה", "האם להעלות את הגירסה החדשה ל-Google Drive?"):
+            try:
+                self.drive_sync.upload_file(exe_path, "FlowerShopManager.exe")
+                messagebox.showinfo("הצלחה", "הגירסה הועלתה בהצלחה.")
+            except Exception as e:
+                messagebox.showerror("שגיאה", f"נכשל בהעלאה: {e}")
 
     def download_new_version(self):
         if not self.drive_sync:
