@@ -10,6 +10,8 @@ import pandas as pd
 from datetime import datetime
 from collections import defaultdict
 
+APP_VERSION = "1.0.0"
+
 # Ensure we are working in the script's/executable's directory
 if getattr(sys, 'frozen', False):
     # If the application is run as a bundle, the PyInstaller bootloader
@@ -292,6 +294,14 @@ class FlowerApp:
         file_menu.add_separator()
         file_menu.add_command(label="פתח תיקיה", command=self.open_app_folder)
         file_menu.add_command(label="יציאה", command=self.root.quit)
+
+        # Help Menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="עזרה", menu=help_menu)
+        help_menu.add_command(label="אודות", command=self.show_about)
+
+    def show_about(self):
+        messagebox.showinfo("אודות", f"Flower Shop Manager\nגרסה: {APP_VERSION}\nיוצר: ilanbar2@gmail.com")
 
     def open_app_folder(self):
         try:
