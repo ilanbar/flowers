@@ -254,32 +254,64 @@ class FlowerApp:
             file_menu.add_command(label="העלה גירסה", command=self.upload_version)
 
         file_menu.add_separator()
+        file_menu.add_command(label="פתח תיקיה", command=self.open_app_folder)
         file_menu.add_command(label="יציאה", command=self.root.quit)
 
+    def open_app_folder(self):
+        try:
+            os.startfile(application_path)
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"נכשל בפתיחת התיקיה: {e}")
+
     def build_version(self):
-        if messagebox.askyesno("בנה גירסה", "האם לבנות גירסה חדשה? (התהליך עשוי לקחת זמן)"):
+        if not messagebox.askyesno("בנה גירסה", "האם לבנות גירסה חדשה? (התהליך עשוי לקחת זמן)"):
+            return
+
+        import threading
+
+        # Create wait window
+        wait_window = tk.Toplevel(self.root)
+        wait_window.title("בונה גירסה...")
+        wait_window.geometry("300x150")
+        wait_window.transient(self.root)
+        wait_window.grab_set()
+        
+        tk.Label(wait_window, text="אנא המתן, בונה גירסה...\nזה עשוי לקחת דקה או שתיים.", pady=10).pack()
+        
+        progress = ttk.Progressbar(wait_window, mode='indeterminate')
+        progress.pack(fill='x', padx=20, pady=10)
+        progress.start(10)
+        
+        # Container for result
+        build_result = {"finished": False, "data": None}
+
+        def run_build_thread():
             try:
-                # Run powershell script
                 cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", "build_exe.ps1"]
-                
-                # Show a wait window
-                wait_window = tk.Toplevel(self.root)
-                wait_window.title("בונה גירסה...")
-                wait_window.geometry("300x100")
-                tk.Label(wait_window, text="אנא המתן, בונה גירסה...\nזה עשוי לקחת דקה או שתיים.").pack(expand=True)
-                wait_window.update()
-                
                 # Run process
                 result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                
+                build_result["data"] = result
+            except Exception as e:
+                build_result["data"] = e
+            finally:
+                build_result["finished"] = True
+
+        threading.Thread(target=run_build_thread, daemon=True).start()
+
+        def check_status():
+            if build_result["finished"]:
                 wait_window.destroy()
-                
-                if result.returncode == 0:
+                result = build_result["data"]
+                if isinstance(result, Exception):
+                     messagebox.showerror("שגיאה", f"שגיאה בביצוע הבנייה: {result}")
+                elif result.returncode == 0:
                     messagebox.showinfo("הצלחה", "הבנייה הסתיימה בהצלחה.\nהקובץ נמצא בתיקיית dist.")
                 else:
                     messagebox.showerror("שגיאה", f"הבנייה נכשלה:\n{result.stderr}\n{result.stdout}")
-            except Exception as e:
-                messagebox.showerror("שגיאה", f"שגיאה בהרצת הבנייה: {e}")
+            else:
+                self.root.after(100, check_status)
+        
+        self.root.after(100, check_status)
 
     def upload_version(self):
         exe_path = os.path.join(application_path, "dist", "FlowerShopManager.exe")
