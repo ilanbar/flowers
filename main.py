@@ -1215,24 +1215,79 @@ class FlowerApp:
                 order_data.append({"Bouquet Name": b_name, "Quantity": qty})
             df_order = pd.DataFrame(order_data)
             
-            # Sheet 2: Prices
-            price_data = []
-            for key, price in self.current_prices.items():
-                parts = key.split(' - ')
-                if len(parts) == 3:
-                    price_data.append({
-                        "Flower Name": parts[0],
-                        "Color": parts[1],
-                        "Size": parts[2],
-                        "Price": price
-                    })
-            df_prices = pd.DataFrame(price_data)
-            
             with pd.ExcelWriter(filepath) as writer:
                 df_order.to_excel(writer, sheet_name="Order", index=False)
-                df_prices.to_excel(writer, sheet_name="Prices", index=False)
                 
-            # messagebox.showinfo("Success", f"Order saved to '{filepath}'.")
+                # Sheet 2: Quantities (Report)
+                total_flowers = defaultdict(int)
+                for bouquet_name, qty in self.current_order:
+                    try:
+                        b = Bouquet(bouquet_name, load_existing=True)
+                        counts = b.flower_count()
+                        for flower, count in counts.items():
+                            total_flowers[flower] += count * qty
+                    except Exception as e:
+                        print(f"Error loading bouquet {bouquet_name}: {e}")
+                
+                qty_data = []
+                sorted_flowers = sorted(total_flowers.items(), key=lambda x: x[0].name)
+                for flower, count in sorted_flowers:
+                    qty_data.append({
+                        "Flower": flower.name,
+                        "Color": flower.color,
+                        "Size": flower.size,
+                        "Total Quantity": count
+                    })
+                
+                if qty_data:
+                    pd.DataFrame(qty_data).to_excel(writer, sheet_name="Quantities", index=False)
+                else:
+                    pd.DataFrame({"Message": ["No quantities"]}).to_excel(writer, sheet_name="Quantities", index=False)
+
+                # Sheet 4: Pricing (Report)
+                pricing_data = []
+                grand_total_price = 0.0
+                
+                for flower, count in sorted_flowers:
+                    flower_key = f"{flower.name} - {flower.color} - {flower.size}"
+                    
+                    # Determine price
+                    price = 0.0
+                    if flower_key in self.current_prices:
+                        price = self.current_prices[flower_key]
+                    else:
+                        default_key = f"{flower.name} - {flower.size}"
+                        if default_key in self.default_prices:
+                            price = self.default_prices[default_key]
+                    
+                    total_line_price = price * count
+                    grand_total_price += total_line_price
+                    
+                    pricing_data.append({
+                        "Flower": flower.name,
+                        "Color": flower.color,
+                        "Size": flower.size,
+                        "Quantity": count,
+                        "Unit Price": price,
+                        "Total Price": total_line_price
+                    })
+                
+                # Add Grand Total row
+                pricing_data.append({
+                    "Flower": "GRAND TOTAL",
+                    "Color": "",
+                    "Size": "",
+                    "Quantity": "",
+                    "Unit Price": "",
+                    "Total Price": grand_total_price
+                })
+
+                if pricing_data:
+                    pd.DataFrame(pricing_data).to_excel(writer, sheet_name="Pricing", index=False)
+                else:
+                    pd.DataFrame({"Message": ["No pricing data"]}).to_excel(writer, sheet_name="Pricing", index=False)
+
+            messagebox.showinfo("הצלחה", f"ההזמנה נשמרה ב-{filepath}")
         except Exception as e:
             messagebox.showerror("שגיאה", f"שגיאה בשמירת ההזמנה: {e}")
 
@@ -1531,7 +1586,6 @@ class FlowerApp:
         self.summary_total_label.pack(side='left', padx=10)
         
         ttk.Button(footer_frame, text="הדפס דוח", command=self.print_summary_report).pack(side='right', padx=5)
-        ttk.Button(footer_frame, text="שמור דוח", command=self.save_summary_report).pack(side='right', padx=5)
 
     def refresh_summary_tab(self):
         # Clear existing
@@ -1626,13 +1680,79 @@ class FlowerApp:
 
     def save_summary_report(self):
         timestamp = datetime.now().strftime("%d_%m_%Y")
-        filename = f"Summary_Report_{timestamp}.txt"
-        
-        report_text = self.generate_summary_text()
+        filename = f"Summary_Report_{timestamp}.xlsx"
         
         try:
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(report_text)
+            with pd.ExcelWriter(filename) as writer:
+                # 1. Quantities Sheet
+                total_flowers = defaultdict(int)
+                for bouquet_name, qty in self.current_order:
+                    try:
+                        b = Bouquet(bouquet_name, load_existing=True)
+                        counts = b.flower_count()
+                        for flower, count in counts.items():
+                            total_flowers[flower] += count * qty
+                    except Exception as e:
+                        print(f"Error loading bouquet {bouquet_name}: {e}")
+                
+                qty_data = []
+                sorted_flowers = sorted(total_flowers.items(), key=lambda x: x[0].name)
+                for flower, count in sorted_flowers:
+                    qty_data.append({
+                        "Flower": flower.name,
+                        "Color": flower.color,
+                        "Size": flower.size,
+                        "Total Quantity": count
+                    })
+                
+                if qty_data:
+                    pd.DataFrame(qty_data).to_excel(writer, sheet_name="Quantities", index=False)
+                else:
+                    pd.DataFrame({"Message": ["No quantities"]}).to_excel(writer, sheet_name="Quantities", index=False)
+
+                # 2. Pricing Sheet
+                pricing_data = []
+                grand_total_price = 0.0
+                
+                for flower, count in sorted_flowers:
+                    flower_key = f"{flower.name} - {flower.color} - {flower.size}"
+                    
+                    # Determine price
+                    price = 0.0
+                    if flower_key in self.current_prices:
+                        price = self.current_prices[flower_key]
+                    else:
+                        default_key = f"{flower.name} - {flower.size}"
+                        if default_key in self.default_prices:
+                            price = self.default_prices[default_key]
+                    
+                    total_line_price = price * count
+                    grand_total_price += total_line_price
+                    
+                    pricing_data.append({
+                        "Flower": flower.name,
+                        "Color": flower.color,
+                        "Size": flower.size,
+                        "Quantity": count,
+                        "Unit Price": price,
+                        "Total Price": total_line_price
+                    })
+                
+                # Add Grand Total row
+                pricing_data.append({
+                    "Flower": "GRAND TOTAL",
+                    "Color": "",
+                    "Size": "",
+                    "Quantity": "",
+                    "Unit Price": "",
+                    "Total Price": grand_total_price
+                })
+
+                if pricing_data:
+                    pd.DataFrame(pricing_data).to_excel(writer, sheet_name="Pricing", index=False)
+                else:
+                    pd.DataFrame({"Message": ["No pricing data"]}).to_excel(writer, sheet_name="Pricing", index=False)
+
             messagebox.showinfo("הצלחה", f"הדוח נשמר ב-{filename}")
         except Exception as e:
             messagebox.showerror("שגיאה", f"נכשל בשמירת הדוח: {e}")
