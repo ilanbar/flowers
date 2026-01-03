@@ -130,13 +130,49 @@ class FlowerApp:
             return
 
         if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להוריד את הנתונים העדכניים מ-Google Drive?"):
-            try:
-                files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
-                self.drive_sync.download_files(files_to_sync)
-                self.reload_data()
-                #messagebox.showinfo("Sync", "Download complete. Loading data...")
-            except Exception as e:
-                messagebox.showerror("שגיאת סנכרון", f"נכשל בהורדה מ-Drive: {e}")
+            import threading
+            
+            # Create wait window
+            wait_window = tk.Toplevel(self.root)
+            wait_window.title("מסנכרן...")
+            wait_window.geometry("300x150")
+            wait_window.transient(self.root)
+            wait_window.grab_set()
+            
+            tk.Label(wait_window, text="מוריד נתונים מ-Google Drive...\nאנא המתן.", pady=10).pack()
+            
+            progress = ttk.Progressbar(wait_window, mode='indeterminate')
+            progress.pack(fill='x', padx=20, pady=10)
+            progress.start(10)
+            
+            sync_result = {"finished": False, "error": None}
+            
+            def run_sync_thread():
+                try:
+                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                    self.drive_sync.download_files(files_to_sync)
+                except Exception as e:
+                    sync_result["error"] = e
+                finally:
+                    sync_result["finished"] = True
+            
+            threading.Thread(target=run_sync_thread, daemon=True).start()
+            
+            def check_status():
+                if sync_result["finished"]:
+                    wait_window.destroy()
+                    if sync_result["error"]:
+                        messagebox.showerror("שגיאת סנכרון", f"נכשל בהורדה מ-Drive: {sync_result['error']}")
+                    else:
+                        # Reload data on main thread
+                        try:
+                            self.reload_data()
+                        except Exception as e:
+                            messagebox.showerror("שגיאה", f"נכשל בטעינת הנתונים: {e}")
+                else:
+                    self.root.after(100, check_status)
+            
+            self.root.after(100, check_status)
 
     def sync_to_drive(self):
         if self.drive_sync and os.path.exists(os.path.join(application_path, 'credentials.json')):
@@ -1234,8 +1270,20 @@ class FlowerApp:
         filepath = os.path.join(orders_dir, f"{filename}.xlsx")
         
         if os.path.exists(filepath):
-            if not messagebox.askyesno("אישור דריסה", f"הזמנה '{filename}' כבר קיימת. האם לדרוס?"):
+            # Yes = Overwrite, No = Save As, Cancel = Cancel
+            response = messagebox.askyesnocancel("קובץ קיים", f"הזמנה '{filename}' כבר קיימת.\nהאם לדרוס את הקובץ הקיים?\n(כן=דרוס, לא=שמור בשם אחר, ביטול=בטל)")
+            
+            if response is None: # Cancel
                 return
+            
+            if not response: # No -> Save as new name
+                new_filename = simpledialog.askstring("שמור בשם", "נא להזין שם לקובץ:", initialvalue=filename)
+                if not new_filename:
+                    return
+                # Ensure extension
+                if not new_filename.endswith('.xlsx'):
+                    new_filename += '.xlsx'
+                filepath = os.path.join(orders_dir, new_filename)
         
         try:
             # Sheet 1: Order
