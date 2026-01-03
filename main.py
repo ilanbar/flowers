@@ -138,11 +138,25 @@ class FlowerApp:
             except Exception as e:
                 messagebox.showerror("שגיאת סנכרון", f"נכשל בהורדה מ-Drive: {e}")
 
+    def sync_to_drive(self):
+        if self.drive_sync and os.path.exists(os.path.join(application_path, 'credentials.json')):
+            if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להעלות שינויים ל-Google Drive?"):
+                try:
+                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                    files_to_sync.extend([f for f in os.listdir('.') if f.startswith('DefaultPricing_') and f.endswith('.xlsx')])
+                    self.drive_sync.upload_files(files_to_sync)
+                    messagebox.showinfo("Sync", "הסנכרון הושלם בהצלחה.")
+                except Exception as e:
+                    messagebox.showerror("שגיאת סנכרון", f"נכשל בהעלאה ל-Drive: {e}")
+        else:
+             messagebox.showinfo("סנכרון Google Drive", "סנכרון אינו זמין (חסר credentials.json או drive_sync.py)")
+
     def on_closing(self):
         if self.drive_sync and os.path.exists(os.path.join(application_path, 'credentials.json')):
             if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להעלות שינויים ל-Google Drive לפני היציאה?"):
                 try:
                     files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                    files_to_sync.extend([f for f in os.listdir('.') if f.startswith('DefaultPricing_') and f.endswith('.xlsx')])
                     self.drive_sync.upload_files(files_to_sync)
                     # messagebox.showinfo("Sync", "Upload complete.")
                 except Exception as e:
@@ -174,6 +188,17 @@ class FlowerApp:
                             self.default_prices[new_key] = float(price)
             except (FileNotFoundError, json.JSONDecodeError):
                 self.default_prices = {}
+        
+        # Load additional pricing files
+        for filename in os.listdir('.'):
+            if filename.startswith("DefaultPricing_") and filename.endswith(".xlsx"):
+                try:
+                    df = pd.read_excel(filename)
+                    for _, row in df.iterrows():
+                        key = f"{row['Flower Name']} - {row['Size']}"
+                        self.default_prices[key] = float(row['Price'])
+                except Exception as e:
+                    print(f"Error loading {filename}: {e}")
         
         # Ensure file is up to date with all combinations
         self.save_default_prices()
@@ -217,8 +242,7 @@ class FlowerApp:
         
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="קובץ", menu=file_menu)
-        file_menu.add_command(label="צור גיבוי", command=self.create_backup)
-        file_menu.add_command(label="שחזר גיבוי", command=self.restore_backup_dialog)
+        file_menu.add_command(label="Sync to Drive", command=self.sync_to_drive)
         file_menu.add_separator()
         file_menu.add_command(label="יציאה", command=self.root.quit)
 
