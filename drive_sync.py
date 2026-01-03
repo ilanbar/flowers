@@ -207,6 +207,27 @@ class DriveSync:
                 dest_path = os.path.join(self.local_dir, name)
                 self._download_single_file(file_id, dest_path)
 
+    def download_file_as(self, remote_filename, local_filename):
+        if not self.service:
+            if not self.authenticate():
+                return False
+
+        folder_id = self.get_folder_id()
+        
+        # Search for the file in the folder
+        query = f"name='{remote_filename}' and '{folder_id}' in parents and trashed=false"
+        results = self.service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+        items = results.get('files', [])
+        
+        if not items:
+            print(f"File {remote_filename} not found in Drive folder.")
+            return False
+            
+        file_id = items[0]['id']
+        dest_path = os.path.join(self.local_dir, local_filename)
+        self._download_single_file(file_id, dest_path)
+        return True
+
     def _download_folder(self, folder_id, local_dest_dir):
         if not os.path.exists(local_dest_dir):
             os.makedirs(local_dest_dir)

@@ -243,8 +243,24 @@ class FlowerApp:
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="קובץ", menu=file_menu)
         file_menu.add_command(label="Sync to Drive", command=self.sync_to_drive)
+        file_menu.add_command(label="הורד גירסה", command=self.download_new_version)
         file_menu.add_separator()
         file_menu.add_command(label="יציאה", command=self.root.quit)
+
+    def download_new_version(self):
+        if not self.drive_sync:
+             messagebox.showerror("שגיאה", "סנכרון אינו זמין.")
+             return
+
+        if messagebox.askyesno("הורד גירסה", "האם להוריד גירסה חדשה מ-Google Drive?"):
+            try:
+                success = self.drive_sync.download_file_as("FlowerShopManager.exe", "FlowerShopManager_new.exe")
+                if success:
+                    messagebox.showinfo("הצלחה", "הגירסה החדשה הורדה כ-FlowerShopManager_new.exe.\nיש לסגור את התוכנה ולהחליף את הקובץ.")
+                else:
+                    messagebox.showerror("שגיאה", "הקובץ FlowerShopManager.exe לא נמצא ב-Drive.")
+            except Exception as e:
+                messagebox.showerror("שגיאה", f"נכשל בהורדה: {e}")
 
     def create_backup(self):
         try:
