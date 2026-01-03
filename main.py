@@ -244,7 +244,9 @@ class FlowerApp:
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="קובץ", menu=file_menu)
         file_menu.add_command(label="שמור ל-Drive", command=self.sync_to_drive)
-        file_menu.add_command(label="הורד גירסה", command=self.download_new_version)
+        
+        if getattr(sys, 'frozen', False):
+            file_menu.add_command(label="הורד גירסה", command=self.download_new_version)
         
         # Developer options (only if not frozen)
         if not getattr(sys, 'frozen', False):
