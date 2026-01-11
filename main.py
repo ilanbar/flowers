@@ -2340,12 +2340,12 @@ class FlowerApp:
                 # We need to find its variant ID. Usually it's the same as product ID or we need to query it.
                 # Let's assume for now we can't easily update it without more info, OR try to fetch variants.
                 variants = manager.get_inventory_variants(item_data['id'])
-                if variants and 'variants' in variants:
+                if variants and 'variants' in variants and len(variants['variants']) > 0:
                     # Use the first variant (should be only one for standalone)
                     variant_id = variants['variants'][0]['id']
                 else:
-                    messagebox.showerror("שגיאה", "לא נמצא מזהה וריאנט למוצר זה.")
-                    return
+                    # Fallback for simple products which typically use the zero-UUID as variant ID
+                    variant_id = "00000000-0000-0000-0000-000000000000"
 
             # Construct update payload
             variants_update = [{
