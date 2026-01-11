@@ -299,3 +299,34 @@ class DriveSync:
         with open(dest_path, 'wb') as f:
             f.write(fh.getbuffer())
         print(f"Downloaded {dest_path}")
+
+    def has_remote_changes(self, files_to_check):
+        if not self.service:
+            if not self.authenticate():
+                return False
+
+        folder_id = self.get_folder_id()
+        
+        # List all files in the folder
+        query = f"'{folder_id}' in parents and trashed=false"
+        results = self.service.files().list(q=query, spaces='drive', fields='files(id, name, md5Checksum)').execute()
+        items = results.get('files', [])
+        remote_map = {item['name']: item for item in items}
+        
+        for filename in files_to_check:
+            if filename in remote_map:
+                remote_file = remote_map[filename]
+                remote_md5 = remote_file.get('md5Checksum')
+                
+                local_path = os.path.join(self.local_dir, filename)
+                if os.path.exists(local_path):
+                    local_md5 = self.get_local_md5(local_path)
+                    if local_md5 != remote_md5:
+                        print(f"Diff found: {filename}")
+                        return True
+                else:
+                    # File exists remotely but not locally -> New file
+                    print(f"New remote file: {filename}")
+                    return True
+            
+        return False

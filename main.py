@@ -6,6 +6,7 @@ import shutil
 import socket
 import sys
 import subprocess
+import threading
 import pandas as pd
 from datetime import datetime
 from collections import defaultdict
@@ -88,7 +89,10 @@ class FlowerApp:
         self.wix_categories = []
         self.selected_wix_category_ids = []
         self.category_tabs = {} # Map category_id -> tab frame
+        self.visibility_backup = None # Store visibility state for lock/unlock
         self.load_wix_config()
+        
+        self.data_dirty = False # Track if data has changed
         
         self.tab_images = [] # Keep references to images
 
@@ -125,22 +129,34 @@ class FlowerApp:
         self.create_global_pricing_tab()
         self.create_wix_categories_tab()
         
-        if self.drive_sync:
-            self.perform_startup_sync()
+        # if self.drive_sync:
+        #     self.perform_startup_sync()
             
     def toggle_right_pane(self):
         if self.show_config_var.get():
             self.main_paned.add(self.right_notebook, weight=2)
         else:
             self.main_paned.forget(self.right_notebook)
+            
+    def mark_dirty(self):
+        self.data_dirty = True
         
     def perform_startup_sync(self):
         if not os.path.exists(os.path.join(application_path, 'credentials.json')):
             return
 
-        if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להוריד את הנתונים העדכניים מ-Google Drive?"):
-            import threading
-            
+        def check_updates_thread():
+            try:
+                files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx", "WixConfig.json", "wix.xlsx"]
+                if self.drive_sync.has_remote_changes(files_to_sync):
+                    self.root.after(0, self._prompt_download_sync)
+            except Exception as e:
+                print(f"Error checking updates: {e}")
+
+        threading.Thread(target=check_updates_thread, daemon=True).start()
+
+    def _prompt_download_sync(self):
+        if messagebox.askyesno("סנכרון Google Drive", "נמצאו שינויים ב-Google Drive. האם להוריד את הנתונים העדכניים?"):
             # Create wait window
             wait_window = tk.Toplevel(self.root)
             wait_window.title("מסנכרן...")
@@ -158,7 +174,7 @@ class FlowerApp:
             
             def run_sync_thread():
                 try:
-                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx", "WixConfig.json"]
+                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx", "WixConfig.json", "wix.xlsx"]
                     self.drive_sync.download_files(files_to_sync)
                 except Exception as e:
                     sync_result["error"] = e
@@ -176,6 +192,7 @@ class FlowerApp:
                         # Reload data on main thread
                         try:
                             self.reload_data()
+                            self.data_dirty = False # Reset dirty flag after sync
                         except Exception as e:
                             messagebox.showerror("שגיאה", f"נכשל בטעינת הנתונים: {e}")
                 else:
@@ -187,7 +204,7 @@ class FlowerApp:
         if self.drive_sync and os.path.exists(os.path.join(application_path, 'credentials.json')):
             if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להעלות שינויים ל-Google Drive?"):
                 try:
-                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
+                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx", "wix.xlsx"]
                     if os.path.exists("WixConfig.json"):
                         files_to_sync.append("WixConfig.json")
                     files_to_sync.extend([f for f in os.listdir('.') if f.startswith('DefaultPricing_') and f.endswith('.xlsx')])
@@ -210,16 +227,18 @@ class FlowerApp:
         self.root.update()
 
         if self.drive_sync and os.path.exists(os.path.join(application_path, 'credentials.json')):
-            if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להעלות שינויים ל-Google Drive לפני היציאה?"):
-                try:
-                    files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx"]
-                    if os.path.exists("WixConfig.json"):
-                        files_to_sync.append("WixConfig.json")
-                    files_to_sync.extend([f for f in os.listdir('.') if f.startswith('DefaultPricing_') and f.endswith('.xlsx')])
-                    self.drive_sync.upload_files(files_to_sync)
-                    # messagebox.showinfo("Sync", "Upload complete.")
-                except Exception as e:
-                    messagebox.showerror("שגיאת סנכרון", f"נכשל בהעלאה ל-Drive: {e}")
+            # Only prompt if data is dirty
+            if self.data_dirty:
+                if messagebox.askyesno("סנכרון Google Drive", "האם ברצונך להעלות שינויים ל-Google Drive לפני היציאה?"):
+                    try:
+                        files_to_sync = ["Flowers.xlsx", "Colors.xlsx", "Bouquets.xlsx", "DefaultPricing.xlsx", "wix.xlsx"]
+                        if os.path.exists("WixConfig.json"):
+                            files_to_sync.append("WixConfig.json")
+                        files_to_sync.extend([f for f in os.listdir('.') if f.startswith('DefaultPricing_') and f.endswith('.xlsx')])
+                        self.drive_sync.upload_files(files_to_sync)
+                        # messagebox.showinfo("Sync", "Upload complete.")
+                    except Exception as e:
+                        messagebox.showerror("שגיאת סנכרון", f"נכשל בהעלאה ל-Drive: {e}")
         
         self.root.destroy()
 
@@ -304,6 +323,7 @@ class FlowerApp:
 
         try:
             df.to_excel("DefaultPricing.xlsx", index=False)
+            self.mark_dirty()
         except Exception as e:
             messagebox.showerror("שגיאה", f"שגיאה בשמירת מחירי ברירת מחדל: {e}")
 
@@ -333,6 +353,12 @@ class FlowerApp:
         file_menu.add_separator()
         file_menu.add_command(label="פתח תיקיה", command=self.open_app_folder)
         file_menu.add_command(label="יציאה", command=self.on_closing)
+
+        # Wix Menu
+        wix_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Wix", menu=wix_menu)
+        wix_menu.add_command(label="נעילת הזמנות", command=self.lock_wix_orders)
+        wix_menu.add_command(label="פתיחת הזמנות", command=self.unlock_wix_orders)
 
         # Help Menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -603,6 +629,7 @@ class FlowerApp:
                             updated_count += 1
                 
                 self.flower_types._save()
+                self.mark_dirty()
                 self.refresh_flowers_list()
                 messagebox.showinfo("הצלחה", f"הקובץ עובד.\nנוספו: {added_count} פרחים חדשים.\nעודכנו: {updated_count} פרחים קיימים.")
             else:
@@ -647,6 +674,7 @@ class FlowerApp:
             selected_sizes = [size_listbox.get(i) for i in size_listbox.curselection()]
             
             self.flower_types.update_config(name, selected_sizes)
+            self.mark_dirty()
             messagebox.showinfo("הצלחה", f"הגדרות עודכנו עבור {name}")
             self.refresh_flowers_list() # Refresh list to show new config
             editor.destroy()
@@ -674,6 +702,7 @@ class FlowerApp:
                 messagebox.showwarning("אזהרה", f"פרח '{name}' כבר קיים.")
                 return
             self.flower_types.add(name)
+            self.mark_dirty()
             self.flower_entry.delete(0, tk.END)
             self.refresh_flowers_list()
 
@@ -685,6 +714,7 @@ class FlowerApp:
                 name = self.displayed_flowers[idx]
                 if messagebox.askyesno("אישור", f"למחוק את הפרח '{name}'?"):
                     self.flower_types.remove(name)
+                    self.mark_dirty()
                     self.refresh_flowers_list()
 
     def create_colors_tab(self):
@@ -733,6 +763,7 @@ class FlowerApp:
                 messagebox.showwarning("אזהרה", f"צבע '{color}' כבר קיים.")
                 return
             self.flower_colors.add(color)
+            self.mark_dirty()
             self.color_entry.delete(0, tk.END)
             self.refresh_colors_list()
 
@@ -742,6 +773,7 @@ class FlowerApp:
             color = self.colors_listbox.get(selection[0])
             if messagebox.askyesno("אישור", f"למחוק את הצבע '{color}'?"):
                 self.flower_colors.remove(color)
+                self.mark_dirty()
                 self.refresh_colors_list()
 
     def create_bouquets_tab(self):
@@ -827,6 +859,7 @@ class FlowerApp:
             try:
                 b = Bouquet(name, based_on)
                 b.save() # Save the new bouquet
+                self.mark_dirty()
                 self.bouquet_name_entry.delete(0, tk.END)
                 self.refresh_bouquets_list()
                 # messagebox.showinfo("Success", f"Bouquet '{b.name}' created.")
@@ -844,6 +877,7 @@ class FlowerApp:
             if messagebox.askyesno("אישור", f"למחוק את הזר '{name}'?"):
                 try:
                     Bouquet.delete_bouquet(name)
+                    self.mark_dirty()
                     self.refresh_bouquets_list()
                 except Exception as e:
                     messagebox.showerror("שגיאה", str(e))
@@ -858,6 +892,7 @@ class FlowerApp:
                 if new_name and new_name != old_name:
                     try:
                         Bouquet.rename_bouquet(old_name, new_name)
+                        self.mark_dirty()
                         self.refresh_bouquets_list()
                         # messagebox.showinfo("Success", f"Renamed '{old_name}' to '{new_name}'.")
                     except ValueError as e:
@@ -910,6 +945,7 @@ class FlowerApp:
                 current_bouquets = load_all_bouquets()
                 current_bouquets.update(new_bouquets)
                 save_all_bouquets(current_bouquets)
+                self.mark_dirty()
                 
                 self.refresh_bouquets_list()
                 messagebox.showinfo("הצלחה", f"נטענו/מוזגו {len(new_bouquets)} זרים.")
@@ -1147,6 +1183,7 @@ class FlowerApp:
         
         def save_bouquet():
             bouquet.save()
+            self.mark_dirty()
             # messagebox.showinfo("הצלחה", "הזר נשמר.")
             
         ttk.Button(controls_frame, text="שמור שינויים", command=save_bouquet).pack(fill='x', pady=20)
@@ -1744,6 +1781,7 @@ class FlowerApp:
         df = pd.DataFrame(data, columns=["Flower Name", "Size", "Price"])
         try:
             df.to_excel(filename, index=False)
+            self.mark_dirty()
             messagebox.showinfo("הצלחה", f"המחירים נשמרו בקובץ '{filename}'")
         except Exception as e:
             messagebox.showerror("שגיאה", f"שגיאה בשמירת המחירים: {e}")
@@ -1863,9 +1901,11 @@ class FlowerApp:
                     val = var.get()
                     if val:
                         self.default_prices[key] = float(val)
+                        self.mark_dirty() # Mark dirty on change
                     else:
                         if key in self.default_prices:
                             del self.default_prices[key]
+                            self.mark_dirty()
                 except ValueError:
                     pass
             
@@ -1889,6 +1929,7 @@ class FlowerApp:
         try:
             with open("WixConfig.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
+            self.mark_dirty()
         except Exception as e:
             messagebox.showerror("שגיאה", f"שגיאה בשמירת הגדרות Wix: {e}")
 
@@ -1963,11 +2004,63 @@ class FlowerApp:
             if not silent:
                 messagebox.showinfo("הצלחה", f"נטענו {len(collections)} קטגוריות.")
             
+            # If this was the initial silent load, now trigger the drive sync
+            if silent:
+                if self.drive_sync:
+                    self.perform_startup_sync()
+                # Also ensure wix.xlsx exists
+                self.ensure_wix_excel_exists_bg()
+
         except Exception as e:
             if not silent:
                 messagebox.showerror("שגיאה", f"שגיאה בטעינת קטגוריות: {e}")
             else:
                 print(f"Error fetching Wix categories: {e}")
+                # Even if error, try to sync
+                if self.drive_sync:
+                    self.perform_startup_sync()
+
+    def ensure_wix_excel_exists_bg(self):
+        threading.Thread(target=self._ensure_wix_excel_exists, daemon=True).start()
+
+    def _ensure_wix_excel_exists(self):
+        excel_file = "wix.xlsx"
+        if os.path.exists(excel_file):
+            return
+
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            all_products = manager.get_all_products(include_variants=False)
+            
+            if not all_products:
+                return
+
+            backup_data = []
+            for p in all_products:
+                backup_data.append({
+                    "Product ID": p['id'],
+                    "Name": p.get('name', ''),
+                    "Visible": p.get('visible', True)
+                })
+            
+            df = pd.DataFrame(backup_data)
+            df.to_excel(excel_file, sheet_name='visibility', index=False)
+            print(f"Created initial {excel_file}")
+            self.mark_dirty()
+            
+        except Exception as e:
+            print(f"Error creating initial wix.xlsx: {e}")
 
     def refresh_wix_categories_list(self):
         # Clear existing
@@ -2015,12 +2108,51 @@ class FlowerApp:
             tab.destroy()
             del self.category_tabs[cid]
             
-        # Create tabs for new selections
-        for cid in active_ids:
-            if cid not in self.category_tabs and cid in cat_map:
-                self.create_category_tab(cid, cat_map[cid])
+        # Identify new tabs to create
+        new_cids = [cid for cid in active_ids if cid not in self.category_tabs and cid in cat_map]
+        
+        if not new_cids:
+            return
 
-    def create_category_tab(self, category_id, category_name):
+        # Progress Bar
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("טוען נתונים")
+        progress_win.geometry("400x150")
+        try:
+            # Center
+            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 200
+            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 75
+            progress_win.geometry(f"+{x}+{y}")
+        except:
+            pass
+            
+        progress_win.transient(self.root)
+        progress_win.grab_set()
+        
+        lbl = ttk.Label(progress_win, text="מתחיל בטעינה...", font=("Arial", 10))
+        lbl.pack(pady=20)
+        
+        pb = ttk.Progressbar(progress_win, orient="horizontal", length=300, mode="determinate")
+        pb.pack(pady=10)
+        pb["maximum"] = len(new_cids)
+        pb["value"] = 0
+        
+        self.root.update()
+
+        # Create tabs for new selections
+        for i, cid in enumerate(new_cids):
+            cat_name = cat_map[cid]
+            lbl.config(text=f"טוען קטגוריה: {cat_name} ({i+1}/{len(new_cids)})")
+            progress_win.update()
+            
+            self.create_category_tab(cid, cat_name, silent=True)
+            
+            pb["value"] = i + 1
+            progress_win.update()
+            
+        progress_win.destroy()
+
+    def create_category_tab(self, category_id, category_name, silent=False):
         frame = ttk.Frame(self.right_notebook)
         # Use a generic image or specific one if available
         img = self.create_tab_image('lightblue') 
@@ -2035,18 +2167,24 @@ class FlowerApp:
                                  command=lambda cid=category_id: self.load_products_for_tab(cid))
         refresh_btn.pack(side='right')
         
+        empty_btn = ttk.Button(btn_frame, text="רוקן מלאי", 
+                               command=lambda cid=category_id: self.empty_category_inventory(cid))
+        empty_btn.pack(side='right', padx=5)
+        
         # Treeview
-        columns = ("name", "sku", "price", "stock")
-        tree = ttk.Treeview(frame, columns=columns, show='headings')
-        tree.heading("name", text="שם מוצר")
-        tree.heading("sku", text="מק\"ט")
+        # Changed columns: Name is now the tree column (#0), others are data columns
+        columns = ("price", "stock", "visible")
+        tree = ttk.Treeview(frame, columns=columns) # default show='tree headings'
+        
+        tree.heading("#0", text="שם מוצר")
         tree.heading("price", text="מחיר")
         tree.heading("stock", text="מלאי")
+        tree.heading("visible", text="מוצג?")
         
-        tree.column("name", width=200)
-        tree.column("sku", width=100)
+        tree.column("#0", width=200)
         tree.column("price", width=80)
         tree.column("stock", width=80)
+        tree.column("visible", width=50, anchor='center')
         
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
@@ -2055,11 +2193,70 @@ class FlowerApp:
         scrollbar.pack(side='right', fill='y')
         
         frame.tree = tree
+        frame.tree_map = {} # Map item_id -> {type, id, variant_id, ...}
+        
+        tree.bind("<Double-1>", lambda event: self.on_tree_double_click(event, frame))
         
         # Auto-load products
-        self.load_products_for_tab(category_id)
+        self.load_products_for_tab(category_id, silent=silent)
 
-    def load_products_for_tab(self, category_id):
+    def on_tree_double_click(self, event, frame):
+        tree = frame.tree
+        region = tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+            
+        column = tree.identify_column(event.x)
+        item_id = tree.identify_row(event.y)
+        if not item_id:
+            return
+            
+        item_data = frame.tree_map.get(item_id)
+        if not item_data:
+            return
+            
+        current_values = tree.item(item_id, "values")
+        
+        # #0 is tree column, #1 is price, #2 is stock
+        if column == "#1": # Price
+            current_price_str = current_values[0] # Price is at index 0
+            
+            # Clean price string (remove currency symbol if present)
+            try:
+                # Remove non-numeric chars except dot
+                import re
+                clean_price = re.sub(r'[^\d.]', '', str(current_price_str))
+                current_price = float(clean_price)
+            except ValueError:
+                current_price = 0.0
+                
+            new_price = simpledialog.askfloat("עדכון מחיר", "הכנס מחיר חדש:", initialvalue=current_price, parent=self.root)
+            
+            if new_price is not None:
+                self.update_wix_price(item_data, new_price, tree, item_id, current_values)
+                
+        elif column == "#2": # Stock
+            current_stock_str = current_values[1] # Stock is at index 1
+            try:
+                current_stock = int(float(current_stock_str))
+            except ValueError:
+                current_stock = 0
+                
+            new_stock = simpledialog.askinteger("עדכון מלאי", "הכנס כמות מלאי חדשה:", initialvalue=current_stock, parent=self.root)
+            
+            if new_stock is not None:
+                self.update_wix_inventory(item_data, new_stock, tree, item_id, current_values)
+
+        elif column == "#3": # Visible
+            current_visible = item_data.get('visible', True)
+            new_visible = not current_visible
+            
+            item_type = "המוצר" if item_data['type'] == 'product' else "הווריאנט"
+            
+            if messagebox.askyesno("שינוי נראות", f"האם לשנות את נראות {item_type} ל-{'מוצג' if new_visible else 'מוסתר'}?"):
+                self.update_wix_visibility(item_data, new_visible, tree, item_id, current_values)
+
+    def update_wix_visibility(self, item_data, new_visible, tree, item_id, current_values):
         # Load token
         try:
             with open("wix_token.json", "r") as f:
@@ -2072,10 +2269,172 @@ class FlowerApp:
         site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
         account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
         
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            
+            if item_data['type'] == 'product':
+                manager.update_product_visibility(item_data['id'], new_visible)
+            elif item_data['type'] == 'variant':
+                manager.update_variant_visibility(item_data['product_id'], item_data['variant_id'], new_visible)
+            
+            # Update UI
+            new_values = list(current_values)
+            new_values[2] = "כן" if new_visible else "לא"
+            tree.item(item_id, values=new_values)
+            
+            # Update internal map
+            item_data['visible'] = new_visible
+            
+            self.mark_dirty()
+            # messagebox.showinfo("הצלחה", "הנראות עודכנה בהצלחה.")
+            
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"שגיאה בעדכון נראות: {e}")
+
+    def update_wix_inventory(self, item_data, new_stock, tree, item_id, current_values):
+        print(f"DEBUG: update_wix_inventory called. Type={item_data['type']}, ID={item_data.get('id') or item_data.get('variant_id')}, Stock={new_stock}")
+        
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            
+            # Prepare variant update data
+            # If it's a product, we need its inventory item ID or default variant ID.
+            # But update_inventory_variants takes product_id and a list of variants.
+            # If it's a simple product (no variants), the variantId is usually the same as productId or 0000-0000...
+            # However, the API usually expects the variant ID.
+            
+            # For variants, we have variant_id.
+            # For products, we might need to check if it has variants.
+            
+            variant_id = item_data.get('variant_id')
+            if not variant_id:
+                # If it's a product row, it might be a simple product.
+                # In Wix, simple products have a single variant with ID '00000000-0000-0000-0000-000000000000' usually,
+                # OR we need to fetch the inventory item ID.
+                # Let's try using the product ID as variant ID or fetch variants first.
+                # Actually, update_inventory_variants in wix.py uses v2/inventoryItems/product/{product_id}
+                # and expects a list of variants.
+                
+                # If we are updating a "Product" row in the tree:
+                # 1. It might be a parent of variants (in which case, what does updating stock mean? All variants? Or is it just a display row?)
+                # 2. It might be a standalone product.
+                
+                # If it has children in the tree, it's a parent.
+                if tree.get_children(item_id):
+                    messagebox.showinfo("מידע", "לא ניתן לעדכן מלאי למוצר אב. אנא עדכן את הווריאנטים הספציפיים.")
+                    return
+                
+                # If no children, it's a standalone product.
+                # We need to find its variant ID. Usually it's the same as product ID or we need to query it.
+                # Let's assume for now we can't easily update it without more info, OR try to fetch variants.
+                variants = manager.get_inventory_variants(item_data['id'])
+                if variants and 'variants' in variants:
+                    # Use the first variant (should be only one for standalone)
+                    variant_id = variants['variants'][0]['id']
+                else:
+                    messagebox.showerror("שגיאה", "לא נמצא מזהה וריאנט למוצר זה.")
+                    return
+
+            # Construct update payload
+            variants_update = [{
+                "variantId": variant_id,
+                "quantity": new_stock
+            }]
+            
+            product_id = item_data.get('product_id') or item_data.get('id')
+            
+            manager.update_inventory_variants(product_id, variants_update)
+            
+            # Update UI
+            new_values = list(current_values)
+            new_values[1] = str(new_stock)
+            tree.item(item_id, values=new_values)
+            
+            messagebox.showinfo("הצלחה", "המלאי עודכן בהצלחה ב-Wix.")
+            
+        except Exception as e:
+            print(f"DEBUG: Error in update_wix_inventory: {e}")
+            messagebox.showerror("שגיאה", f"שגיאה בעדכון המלאי: {e}")
+
+    def update_wix_price(self, item_data, new_price, tree, item_id, current_values):
+        print(f"DEBUG: update_wix_price called. Type={item_data['type']}, ID={item_data.get('id') or item_data.get('variant_id')}, Price={new_price}")
+        
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            
+            if item_data['type'] == 'product':
+                manager.update_product_price(item_data['id'], new_price)
+            elif item_data['type'] == 'variant':
+                # Calculate difference if needed, but first try absolute
+                # If user says "Price difference", we might need to calculate it.
+                # But let's stick to absolute for now as per API test.
+                
+                # Wait! If the user says "Price difference", maybe they mean the API expects the difference?
+                # But my test showed absolute works.
+                # Maybe the user wants the UI to show the difference?
+                # Or maybe the user wants to ENTER the difference?
+                
+                # Let's assume the user wants to enter the ABSOLUTE price (e.g. 85), 
+                # and if the API required difference, I'd calculate it.
+                # But the API seems to take absolute.
+                
+                print(f"DEBUG: Calling update_variant_price for Product {item_data['product_id']}, Variant {item_data['variant_id']}")
+                manager.update_variant_price(item_data['product_id'], item_data['variant_id'], new_price, item_data.get('choices'))
+                
+            # Update UI
+            new_values = list(current_values)
+            new_values[0] = f"₪{new_price:.2f}"
+            tree.item(item_id, values=new_values)
+            
+            messagebox.showinfo("הצלחה", "המחיר עודכן בהצלחה ב-Wix.")
+            
+        except Exception as e:
+            print(f"DEBUG: Error in update_wix_price: {e}")
+            messagebox.showerror("שגיאה", f"שגיאה בעדכון המחיר: {e}")
+
+    def load_products_for_tab(self, category_id, silent=False):
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            if not silent:
+                messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
         frame = self.category_tabs.get(category_id)
         if not frame: return
         
         tree = frame.tree
+        frame.tree_map = {} # Reset map
         
         # Clear existing
         for item in tree.get_children():
@@ -2091,18 +2450,370 @@ class FlowerApp:
                 for p in products:
                     name = p.get('name', 'Unknown')
                     sku = p.get('sku', '')
-                    price = p.get('price', {}).get('value', '0')
                     
-                    stock_status = "In Stock" if p.get('stock', {}).get('inStock', False) else "Out of Stock"
+                    # Fix price extraction
+                    price_data = p.get('price', {})
+                    price = price_data.get('formatted', {}).get('price')
+                    if not price:
+                        price = price_data.get('price', 0)
                     
-                    tree.insert("", tk.END, values=(name, sku, price, stock_status))
+                    # Stock extraction
+                    stock_info = p.get('stock', {})
+                    stock_qty = stock_info.get('quantity', 0)
+                    # If quantity is None, it might be untracked or just inStock bool
+                    if stock_qty is None:
+                        stock_qty = 0
+                    
+                    visible = "כן" if p.get('visible', True) else "לא"
+
+                    # Insert parent
+                    parent_id = tree.insert("", tk.END, text=name, values=(price, stock_qty, visible))
+                    frame.tree_map[parent_id] = {'type': 'product', 'id': p['id'], 'name': name, 'visible': p.get('visible', True)}
+                    
+                    # Handle variants
+                    variants = p.get('variants', [])
+                    if variants:
+                        for v in variants:
+                            choices = v.get('choices', {})
+                            if not choices:
+                                continue
+                                
+                            variant_name = " / ".join(choices.values())
+                            
+                            v_details = v.get('variant', {})
+                            v_sku = v_details.get('sku', '')
+                            
+                            # Fix variant price extraction
+                            v_price_data = v_details.get('priceData', {})
+                            v_price = v_price_data.get('formatted', {}).get('price')
+                            if not v_price:
+                                v_price = v_price_data.get('price')
+                            
+                            print(f"DEBUG: Loaded variant {v['id']} price: {v_price}")
+                            
+                            if v_price is None: v_price = price
+                            
+                            v_stock = v.get('stock', {})
+                            v_stock_qty = v_stock.get('quantity', 0)
+                            if v_stock_qty is None:
+                                v_stock_qty = 0
+                            
+                            v_visible = "כן" if v_details.get('visible', True) else "לא"
+
+                            child_id = tree.insert(parent_id, tk.END, text=variant_name, values=(v_price, v_stock_qty, v_visible))
+                            frame.tree_map[child_id] = {
+                                'type': 'variant', 
+                                'product_id': p['id'], 
+                                'variant_id': v['id'], 
+                                'name': variant_name,
+                                'choices': choices,
+                                'visible': v_details.get('visible', True)
+                            }
                 
                 # messagebox.showinfo("הצלחה", f"נטענו {len(products)} מוצרים.")
             else:
-                messagebox.showinfo("מידע", "לא נמצאו מוצרים או שגיאה בטעינה.")
+                if not silent:
+                    messagebox.showinfo("מידע", "לא נמצאו מוצרים או שגיאה בטעינה.")
                 
         except Exception as e:
-            messagebox.showerror("שגיאה", f"שגיאה בטעינת מוצרים: {e}")
+            if not silent:
+                messagebox.showerror("שגיאה", f"שגיאה בטעינת מוצרים: {e}")
+            else:
+                print(f"Error loading products for tab {category_id}: {e}")
+
+    def lock_wix_orders(self):
+        if not messagebox.askyesno("נעילת הזמנות", "פעולה זו תסתיר את כל המוצרים באתר (תמנע הזמנות חדשות).\nהאם להמשיך?"):
+            return
+
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            
+            # 1. Fetch all products
+            progress_win = tk.Toplevel(self.root)
+            progress_win.title("נעילת הזמנות")
+            progress_win.geometry("300x150")
+            lbl = tk.Label(progress_win, text="טוען רשימת מוצרים...")
+            lbl.pack(pady=10)
+            pb = ttk.Progressbar(progress_win, orient="horizontal", length=280, mode="indeterminate")
+            pb.pack(pady=10)
+            pb.start(10)
+            self.root.update()
+            
+            all_products = manager.get_all_products(include_variants=False)
+            
+            if not all_products:
+                progress_win.destroy()
+                messagebox.showinfo("מידע", "לא נמצאו מוצרים או שגיאה בטעינה.")
+                return
+
+            # 2. Backup visibility state to Excel
+            backup_data = []
+            for p in all_products:
+                backup_data.append({
+                    "Product ID": p['id'],
+                    "Name": p.get('name', ''),
+                    "Visible": p.get('visible', True)
+                })
+            
+            df = pd.DataFrame(backup_data)
+            excel_file = "wix.xlsx"
+            
+            try:
+                # Try to append if file exists, otherwise create new
+                if os.path.exists(excel_file):
+                    with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+                        df.to_excel(writer, sheet_name='visibility', index=False)
+                else:
+                    df.to_excel(excel_file, sheet_name='visibility', index=False)
+                    
+                lbl.config(text=f"גיבוי נשמר בקובץ {excel_file}")
+            except Exception as e:
+                # Fallback for older pandas versions or other errors: overwrite file or try simple write
+                print(f"Backup error (trying overwrite): {e}")
+                df.to_excel(excel_file, sheet_name='visibility', index=False)
+                lbl.config(text=f"גיבוי נשמר בקובץ {excel_file}")
+            
+            self.mark_dirty()
+            self.root.update()
+
+            # 3. Hide products
+            lbl.config(text="מסתיר מוצרים...")
+            pb.stop()
+            pb.config(mode="determinate", maximum=len(all_products), value=0)
+            self.root.update()
+            
+            for i, product in enumerate(all_products):
+                product_id = product['id']
+                # Only hide if currently visible (optimization)
+                if product.get('visible', True):
+                    manager.update_product_visibility(product_id, False)
+                
+                pb["value"] = i + 1
+                progress_win.update()
+                
+            progress_win.destroy()
+            messagebox.showinfo("הצלחה", "ההזמנות ננעלו בהצלחה (כל המוצרים הוסתרו).")
+            
+            # Refresh current tab if any
+            current_tab = self.right_notebook.select()
+            if current_tab:
+                # Find category id for this tab
+                for cid, frame in self.category_tabs.items():
+                    if str(frame) == current_tab:
+                        self.load_products_for_tab(cid, silent=True)
+                        break
+
+        except Exception as e:
+            if 'progress_win' in locals(): progress_win.destroy()
+            messagebox.showerror("שגיאה", f"שגיאה בנעילת הזמנות: {e}")
+
+    def unlock_wix_orders(self):
+        excel_file = "wix.xlsx"
+        if not os.path.exists(excel_file):
+            messagebox.showinfo("מידע", "לא נמצא קובץ wix.xlsx.")
+            return
+            
+        try:
+            df = pd.read_excel(excel_file, sheet_name='visibility')
+            if df.empty:
+                messagebox.showinfo("מידע", "גיליון visibility ריק.")
+                return
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"שגיאה בטעינת קובץ הגיבוי: {e}")
+            return
+            
+        if not messagebox.askyesno("פתיחת הזמנות", "האם לשחזר את נראות המוצרים מקובץ wix.xlsx?"):
+            return
+            
+        # Convert DataFrame to dict for easier lookup
+        visibility_state = {}
+        for _, row in df.iterrows():
+            visibility_state[row['Product ID']] = row['Visible']
+
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            
+            progress_win = tk.Toplevel(self.root)
+            progress_win.title("פתיחת הזמנות")
+            progress_win.geometry("300x150")
+            lbl = tk.Label(progress_win, text="משחזר נראות מוצרים...")
+            lbl.pack(pady=10)
+            pb = ttk.Progressbar(progress_win, orient="horizontal", length=280, mode="determinate")
+            pb.pack(pady=10)
+            pb["maximum"] = len(visibility_state)
+            pb["value"] = 0
+            self.root.update()
+            
+            i = 0
+            for product_id, was_visible in visibility_state.items():
+                # Only update if it was visible (since we hid everything)
+                # Or should we restore False too? 
+                # If we restore False, we ensure products that were hidden stay hidden.
+                # But we only need to call API if we want to change it to True.
+                # Wait, everything is currently False (hidden).
+                # So we only need to update those that should be True.
+                
+                if was_visible:
+                    manager.update_product_visibility(product_id, True)
+                
+                i += 1
+                pb["value"] = i
+                progress_win.update()
+                
+            progress_win.destroy()
+            messagebox.showinfo("הצלחה", "ההזמנות נפתחו בהצלחה (נראות המוצרים שוחזרה).")
+            
+            # Refresh current tab if any
+            current_tab = self.right_notebook.select()
+            if current_tab:
+                for cid, frame in self.category_tabs.items():
+                    if str(frame) == current_tab:
+                        self.load_products_for_tab(cid, silent=True)
+                        break
+
+        except Exception as e:
+            if 'progress_win' in locals(): progress_win.destroy()
+            messagebox.showerror("שגיאה", f"שגיאה בפתיחת הזמנות: {e}")
+
+    def empty_category_inventory(self, category_id):
+        if not messagebox.askyesno("אישור", "האם אתה בטוח שברצונך לאפס את המלאי לכל המוצרים בקטגוריה זו?"):
+            return
+            
+        frame = self.category_tabs.get(category_id)
+        if not frame: return
+        
+        tree = frame.tree
+        
+        # Collect all items to update
+        items_to_update = []
+        
+        for item_id in tree.get_children():
+            item_data = frame.tree_map.get(item_id)
+            if not item_data: continue
+            
+            # If it's a product with variants (has children), we skip the parent row itself 
+            # and process children.
+            children = tree.get_children(item_id)
+            if children:
+                for child_id in children:
+                    child_data = frame.tree_map.get(child_id)
+                    if child_data and child_data['type'] == 'variant':
+                        items_to_update.append((child_data, child_id))
+            else:
+                # Standalone product or product without variants loaded?
+                if item_data['type'] == 'product':
+                     items_to_update.append((item_data, item_id))
+
+        if not items_to_update:
+            messagebox.showinfo("מידע", "לא נמצאו פריטים לעדכון.")
+            return
+
+        # Load token
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        try:
+            manager = WixInventoryManager(api_key, site_id, account_id)
+            
+            # Group by product_id
+            updates_by_product = defaultdict(list)
+            
+            # Progress for preparation
+            progress_win = tk.Toplevel(self.root)
+            progress_win.title("מכין נתונים...")
+            progress_win.geometry("300x100")
+            lbl = tk.Label(progress_win, text="מכין נתונים...")
+            lbl.pack(pady=10)
+            
+            self.root.update()
+            
+            for data, tree_id in items_to_update:
+                p_id = data.get('product_id') or data.get('id')
+                v_id = data.get('variant_id')
+                
+                if not v_id:
+                    # Fetch variants for standalone product
+                    try:
+                        variants = manager.get_inventory_variants(p_id)
+                        if variants and 'variants' in variants:
+                            v_id = variants['variants'][0]['id']
+                        else:
+                            print(f"Skipping {p_id} - no variant found")
+                            continue
+                    except Exception as e:
+                        print(f"Error fetching variants for {p_id}: {e}")
+                        continue
+                
+                updates_by_product[p_id].append({
+                    "variantId": v_id,
+                    "quantity": 0
+                })
+            
+            progress_win.destroy()
+            
+            if not updates_by_product:
+                messagebox.showinfo("מידע", "לא נמצאו וריאנטים לעדכון.")
+                return
+
+            # Perform updates
+            progress_win = tk.Toplevel(self.root)
+            progress_win.title("מאפס מלאי...")
+            progress_win.geometry("300x100")
+            lbl = tk.Label(progress_win, text="מעדכן Wix...")
+            lbl.pack(pady=10)
+            pb = ttk.Progressbar(progress_win, orient="horizontal", length=280, mode="determinate")
+            pb.pack(pady=10)
+            pb["maximum"] = len(updates_by_product)
+            pb["value"] = 0
+            
+            self.root.update()
+            
+            for i, (p_id, variants_update) in enumerate(updates_by_product.items()):
+                manager.update_inventory_variants(p_id, variants_update)
+                pb["value"] = i + 1
+                progress_win.update()
+                
+            progress_win.destroy()
+            
+            # Refresh tab
+            self.load_products_for_tab(category_id)
+            messagebox.showinfo("הצלחה", "המלאי אופס בהצלחה.")
+            
+        except Exception as e:
+            if 'progress_win' in locals(): progress_win.destroy()
+            messagebox.showerror("שגיאה", f"שגיאה באיפוס מלאי: {e}")
 
 def check_single_instance():
     try:
