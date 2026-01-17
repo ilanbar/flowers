@@ -128,6 +128,7 @@ class FlowerApp:
         self.create_colors_tab()
         self.create_global_pricing_tab()
         self.create_wix_categories_tab()
+        self.create_customers_tab()
         
         # if self.drive_sync:
         #     self.perform_startup_sync()
@@ -2934,6 +2935,715 @@ class FlowerApp:
         except Exception as e:
             if 'progress_win' in locals(): progress_win.destroy()
             messagebox.showerror("שגיאה", f"שגיאה באיפוס מלאי: {e}")
+
+    def create_customers_tab(self):
+        self.customers_tab = ttk.Frame(self.right_notebook)
+        self.right_notebook.add(self.customers_tab, text="לקוחות", compound='left')
+        
+        # Toolbar
+        toolbar = ttk.Frame(self.customers_tab)
+        toolbar.pack(fill='x', padx=5, pady=5)
+        ttk.Button(toolbar, text="רענן רשימה", command=self.load_customers).pack(side='right')
+
+        # Scrollable area
+        canvas = tk.Canvas(self.customers_tab)
+        scrollbar = ttk.Scrollbar(self.customers_tab, orient="vertical", command=canvas.yview)
+        self.customers_list_frame = ttk.Frame(canvas)
+        
+        self.customers_list_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        self.customers_window_id = canvas.create_window((0, 0), window=self.customers_list_frame, anchor="nw")
+        
+        # Ensure frame fills canvas width
+        def on_canvas_configure(event):
+            canvas.itemconfig(self.customers_window_id, width=event.width)
+            
+        canvas.bind("<Configure>", on_canvas_configure)
+        
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        self.customers_canvas = canvas
+
+         # Mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            
+        self.on_customer_scroll = _on_mousewheel
+        
+        # Bind to background areas
+        canvas.bind("<MouseWheel>", self.on_customer_scroll)
+        self.customers_list_frame.bind("<MouseWheel>", self.on_customer_scroll)
+
+    def load_customers(self):
+        # clear existing
+        for widget in self.customers_list_frame.winfo_children():
+            widget.destroy()
+            
+        # Get Wix manager
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        manager = WixInventoryManager(api_key, site_id, account_id)
+        
+        # Show loading
+        loading_frame = ttk.Frame(self.customers_list_frame)
+        loading_frame.pack(anchor="center", pady=20)
+        
+        ttk.Label(loading_frame, text="טוען נתונים...").pack(pady=5)
+        pb = ttk.Progressbar(loading_frame, orient="horizontal", mode="indeterminate", length=200)
+        pb.pack(pady=5)
+        pb.start(10)
+        
+        self.root.update()
+        
+        def fetch_thread():
+            try:
+                # Load manual map
+                manual_map = self._get_manual_customer_map()
+                
+                # Try fetching customers directly first (unlikely to work due to permissions, but good to keep)
+                customers_data = manager.get_customers(limit=50)
+                
+                # If failed (e.g. 403 Forbidden which returns None/Empty usually in this wrapper logic?), try fallback
+                if not customers_data:
+                    print("Fallback: extracting customers from orders...")
+                    
+                    # Fetch ALL orders (paginated) to ensure we capture every historical customer identity
+                    all_fetched_orders = []
+                    offset = 0
+                    batch_size = 100 # Wix Max
+                    
+                    while True:
+                        # Update loading text if possible, or print debug
+                        print(f"Fetching orders offset {offset}...")
+                        
+                        # Added ContactID exclusion filter to manual map auto-population logic
+                        # But we can't filter the fetch easily.
+                        
+                        batch_data = manager.get_orders(limit=batch_size, offset=offset)
+                        if not batch_data:
+                            break
+                            
+                        orders_batch = batch_data.get('orders', [])
+                        if not orders_batch:
+                            break
+                            
+                        all_fetched_orders.extend(orders_batch)
+                        
+                        if len(orders_batch) < batch_size:
+                            # End of list
+                            break
+                        
+                        offset += batch_size
+                        
+                        # Safety break to prevent infinite loops if something goes wrong, 
+                        # but 5000 is a reasonable soft limit for this context
+                        if offset > 5000: 
+                            print("Reached safety limit of 5000 orders.")
+                            break
+                    
+                    print(f"Total orders fetched: {len(all_fetched_orders)}")
+                    
+                    if all_fetched_orders:
+                        # Wrap in expected structure
+                        customers_data = self._extract_customers_from_orders({'orders': all_fetched_orders}, manual_map=manual_map)
+                        
+                        # Populate/Update the Excel file with found customers so user can edit them
+                        self._update_customer_db_file(customers_data, manual_map)
+
+                # Update UI in main thread
+                self.root.after(0, lambda: self._display_customers(customers_data, manager, loading_frame))
+            except Exception as e:
+                print(f"Fetch error: {e}")
+                self.root.after(0, lambda: messagebox.showerror("שגיאה", f"שגיאה בטעינת לקוחות: {e}"))
+                self.root.after(0, loading_frame.destroy)
+
+        threading.Thread(target=fetch_thread, daemon=True).start()
+
+    def _update_customer_db_file(self, customers_data, existing_map):
+        """
+        Updates wix.xlsx -> Customers sheet with new customer IDs found.
+        """
+        new_entries = []
+        contacts = customers_data.get('contacts', [])
+        
+        # Admin IDs to blacklist from file export
+        # We don't want to accidentally map the Admin Proxy ID to a single name in the DB
+        ADMIN_CONTACT_IDS = {'cc99f7d9-15fe-495d-8934-e7f6f531a295'} 
+        
+        for contact in contacts:
+             # Skip if flagged as admin proxy
+            if contact.get('is_admin_proxy', False):
+                continue
+                
+            # Get the display name determined by our logic
+            display_name = ""
+            info = contact.get('info', {})
+            name_obj = info.get('name', {})
+            display_name = f"{name_obj.get('first', '')} {name_obj.get('last', '')}".strip()
+            
+            # If empty name, use something else?
+            if not display_name:
+                display_name = "Unknown"
+            
+            # Iterate all linked IDs
+            all_ids = contact.get('ids', set())
+            for uid in all_ids:
+                if uid in ADMIN_CONTACT_IDS: continue # Safety skip
+                
+                if uid not in existing_map:
+                    # New ID to add
+                    new_entries.append({
+                        "Customer Name": display_name,
+                        "Customer ID": uid,
+                        "Details": "Auto-Generated"
+                    })
+                    # Add to map so we don't add duplicates in this loop implied
+                    existing_map[uid] = display_name
+        
+        if not new_entries:
+            return # Nothing to add
+
+        # Append to Excel
+        filename = "wix.xlsx"
+        sheet_name = "Customers"
+        try:
+            # Re-read existing to ensure we append cleanly
+            if os.path.exists(filename):
+                try:
+                    existing_df = pd.read_excel(filename, sheet_name=sheet_name)
+                except Exception:
+                    existing_df = pd.DataFrame(columns=["Customer Name", "Customer ID", "Details"])
+            else:
+                existing_df = pd.DataFrame(columns=["Customer Name", "Customer ID", "Details"])
+            
+            new_df = pd.DataFrame(new_entries)
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            
+            # Write back
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                combined_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                
+            print(f"Updated {filename} with {len(new_entries)} new customer entries.")
+            
+        except Exception as e:
+            print(f"Error updating manual map file: {e}") 
+            # Non-critical, just log
+
+    def _get_manual_customer_map(self):
+        """
+        Reads manual customer mapping from wix.xlsx -> Customers sheet.
+        Returns a dictionary {contact_id: customer_name}
+        """
+        filename = "wix.xlsx"
+        sheet_name = "Customers"
+        mapping = {}
+        
+        # Ensure file exists
+        if not os.path.exists(filename):
+            # Create new file with sheet
+            try:
+                df = pd.DataFrame(columns=["Customer Name", "Customer ID", "Details"])
+                with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            except Exception as e:
+                print(f"Error creating wix.xlsx: {e}")
+                return {}
+        
+        # Check/Create Sheet
+        try:
+            full_df = pd.read_excel(filename, sheet_name=None) # Read all sheets
+            if sheet_name not in full_df:
+                # Add sheet
+                with pd.ExcelWriter(filename, mode='a', engine='openpyxl') as writer:
+                     df = pd.DataFrame(columns=["Customer Name", "Customer ID", "Details"])
+                     df.to_excel(writer, sheet_name=sheet_name, index=False)
+                return {}
+            else:
+                # Read data
+                df = full_df[sheet_name]
+                # Expected columns: "Customer Name", "Customer ID"
+                for index, row in df.iterrows():
+                    c_name = str(row.get("Customer Name", "")).strip()
+                    c_id = str(row.get("Customer ID", "")).strip()
+                    if c_name and c_id and c_name != 'nan' and c_id != 'nan':
+                        mapping[c_id] = c_name
+        except Exception as e:
+            print(f"Error reading manual map: {e}")
+            
+        return mapping
+
+    def _extract_customers_from_orders(self, orders_data, manual_map=None):
+        orders = orders_data.get('orders', [])
+        unique_contacts = {} # MasterKey -> CustomerData
+        
+        # Maps to resolve identity
+        map_email_to_key = {}
+        map_phone_to_key = {} # Restore phone map for non-admin
+        map_name_to_key = {}  # New name map for aggregation
+        
+        # Admin Identifiers (Shop Owner)
+        # If these appear, we must split by NAME, not link by ID/Email.
+        # We also blacklist the Admin Contact ID from being valid for Manual Mapping (to prevent "Poisoning" the map with a shared ID)
+        ADMIN_EMAILS = {'ilanbar2@gmail.com'}
+        ADMIN_PHONES = {'0547885130', '054-7885130', '+972547885130'}
+        # Specific known Admin IDs (from debugging) identifying the shop owner acting as proxy
+        ADMIN_CONTACT_IDS = {'cc99f7d9-15fe-495d-8934-e7f6f531a295'} 
+        
+        for order in orders:
+             buyer = order.get('buyerInfo', {})
+             
+             # Identity Keys
+             email = buyer.get('email', '').lower().strip()
+             clean_phone_raw = buyer.get('phone', '').replace('-', '').replace(' ', '').replace('+972', '0')
+             phone = buyer.get('phone', '').strip()
+             
+             contact_id = buyer.get('contactId')
+             
+             first = buyer.get('firstName', '')
+             last = buyer.get('lastName', '')
+             full_name = f"{first} {last}".strip()
+
+             # Calculate Stats
+             totals = order.get('totals', {})
+             try:
+                total_val = float(totals.get('total', 0))
+             except:
+                total_val = 0.0
+             currency = order.get('currency', 'ILS')
+             
+             if not contact_id: continue 
+
+             # Check for Admin/Owner override
+             is_admin_order = (email in ADMIN_EMAILS) or (clean_phone_raw in ADMIN_PHONES) or (contact_id in ADMIN_CONTACT_IDS)
+             
+             found_key = None
+             
+             # 0. Manual Override
+             # Skip manual map if it's a known Admin ID (prevents accidental merging of all admin orders into one name via Excel)
+             if manual_map and contact_id in manual_map and contact_id not in ADMIN_CONTACT_IDS:
+                 # Override everything else. Use the customer name from Excel as the key!
+                 mapped_name = manual_map[contact_id]
+                 found_key = mapped_name 
+                 
+                 # We should also ensure this overrides Admin Proxy if the ID is explicitly mapped!
+                 is_admin_order = False 
+             
+             elif is_admin_order:
+                 # Start with a proposed key based on Name
+                 used_key = f"admin_proxy_{full_name}"
+                 found_key = used_key
+             
+             if found_key is None:
+                 # Standard Handling 
+                 
+                 # As per request: "ignore these fields" (Email/Phone) is risky globally, but we prioritize NAME based matching now.
+                 # The user specifically complained about "Lisa" (an admin case), which is handled above.
+                 # For general cases, we continue with the robust 3-layer check.
+                 
+                 # 1. Email (Strongest Link)
+                 if email and email in map_email_to_key:
+                     found_key = map_email_to_key[email]
+                 # 2. Phone (Only if NOT admin phone)
+                 elif phone and phone in map_phone_to_key and clean_phone_raw not in ADMIN_PHONES:
+                     found_key = map_phone_to_key[phone]
+                 # 3. Name (Exact Match fallback - requested preference)
+                 elif full_name and full_name in map_name_to_key:
+                     found_key = map_name_to_key[full_name]
+                 # 4. Direct Key check
+                 elif email and email in unique_contacts:
+                     found_key = email
+                 elif contact_id in unique_contacts:
+                     found_key = contact_id
+                 else:
+                     found_key = None
+                     
+                 # If still None, define new key
+                 if found_key is None:
+                     found_key = email if email else contact_id
+
+             used_key = found_key
+
+             # Create or Update
+             if used_key not in unique_contacts:
+                 # Create New
+                 unique_contacts[used_key] = {
+                     'id': contact_id, 
+                     'ids': {contact_id}, 
+                     # If manual, name is the Key (or derived). If admin, name is from order.
+                     'info': {
+                         'name': {'first': first, 'last': last},
+                         'emails': [{'email': email}] if email and not is_admin_order else [],
+                         'phones': [{'phone': phone}] if phone and (not is_admin_order or clean_phone_raw not in ADMIN_PHONES) else []
+                     },
+                     'stats': {
+                         'count': 1,
+                         'total': total_val,
+                         'currency': currency
+                     }
+                 }
+                 
+                 # Apply Admin Flags
+                 if is_admin_order:
+                     unique_contacts[used_key]['force_name_filter'] = True
+                     unique_contacts[used_key]['filter_name'] = full_name
+                     unique_contacts[used_key]['is_admin_proxy'] = True # Mark for file export exclusion
+                 
+                 # Apply Manual Override Name
+                 if manual_map and contact_id in manual_map and contact_id not in ADMIN_CONTACT_IDS:
+                      m_name = manual_map[contact_id]
+                      unique_contacts[used_key]['info']['name'] = {'first': m_name, 'last': ''}
+
+                 if not is_admin_order:
+                     # Update Maps for future lookup
+                     if email: map_email_to_key[email] = used_key
+                     if phone and clean_phone_raw not in ADMIN_PHONES: map_phone_to_key[phone] = used_key
+                     if full_name: map_name_to_key[full_name] = used_key
+
+             else:
+                 # Update Existing
+
+
+                 record = unique_contacts[used_key]
+                 record['ids'].add(contact_id)
+                 
+                 # Info update logic
+                 # Phone: Only add if unique. If admin order, only add if it's NOT the admin phone.
+                 current_phones = [p.get('phone') for p in record['info']['phones']]
+                 should_add_phone = False
+                 
+                 if phone and phone not in current_phones:
+                     if is_admin_order:
+                         if clean_phone_raw not in ADMIN_PHONES:
+                             should_add_phone = True
+                     else:
+                         should_add_phone = True
+                 
+                 if should_add_phone:
+                     record['info']['phones'].append({'phone': phone})
+                     
+                 # Map new aliases (Standard only)
+                 if not is_admin_order:
+                     if email and email not in map_email_to_key:
+                         map_email_to_key[email] = used_key
+                     if phone and clean_phone_raw not in ADMIN_PHONES and phone not in map_phone_to_key:
+                         map_phone_to_key[phone] = used_key
+                     if full_name and full_name not in map_name_to_key:
+                         map_name_to_key[full_name] = used_key
+                 
+                 # Aggregate stats
+                 record['stats']['count'] += 1
+                 record['stats']['total'] += total_val
+        
+        # Convert sets back to lists for easier handling if needed
+        final_list = []
+        for key, data in unique_contacts.items():
+            combined_id = ",".join(list(data['ids']))
+            data['id'] = combined_id
+            final_list.append(data)
+            
+        return {'contacts': final_list}
+        
+        # Convert sets back to lists for easier handling if needed
+        final_list = []
+        for key, data in unique_contacts.items():
+            combined_id = ",".join(list(data['ids']))
+            data['id'] = combined_id
+            final_list.append(data)
+            
+        return {'contacts': final_list}
+
+    def _display_customers(self, customers_data, manager, loading_label):
+        loading_label.destroy()
+        
+        if not customers_data:
+            messagebox.showinfo("מידע", "לא התקבלו לקוחות מחנות Wix.")
+            return
+            
+        contacts = customers_data.get('contacts', [])
+        
+        if not contacts:
+             ttk.Label(self.customers_list_frame, text="לא נמצאו לקוחות").pack(anchor="e", padx=10, pady=10)
+             return
+
+        # Initialize state for sorting
+        self.customers_data_cache = contacts
+        self.customers_manager_ref = manager
+        # Default sort: Order Count Descending
+        self.customers_sort_state = {'key': 'count', 'reverse': True}
+        
+        self._render_customer_list()
+
+    def _render_customer_list(self):
+        # Clear frame
+        for widget in self.customers_list_frame.winfo_children():
+            widget.destroy()
+            
+        # Sort logic
+        key = self.customers_sort_state['key']
+        reverse = self.customers_sort_state['reverse']
+        
+        def sort_func(c):
+            if key == 'count':
+                return c.get('stats', {}).get('count', 0)
+            elif key == 'total':
+                return c.get('stats', {}).get('total', 0)
+            elif key == 'name':
+                n = c.get('info', {}).get('name', {})
+                return f"{n.get('first','')} {n.get('last','')}"
+            elif key == 'phone':
+                p = c.get('info', {}).get('phones', [])
+                return p[0].get('phone', '') if p else ''
+            return 0
+            
+        self.customers_data_cache.sort(key=sort_func, reverse=reverse)
+        
+        # Header Frame
+        header_frame = ttk.Frame(self.customers_list_frame)
+        header_frame.pack(fill='x', pady=5, padx=5, anchor='e')
+        
+        # Bind MouseWheel to header frame
+        if hasattr(self, 'on_customer_scroll'):
+            header_frame.bind("<MouseWheel>", self.on_customer_scroll)
+        
+        # Helper for header columns
+        def make_header(text, k, w):
+            arrow = ""
+            if self.customers_sort_state['key'] == k:
+                arrow = " ▼" if self.customers_sort_state['reverse'] else " ▲"
+            
+            # Using Label with binding for click
+            lbl = ttk.Label(header_frame, text=text + arrow, width=w, anchor="center", font=('Helvetica', 9, 'bold', 'underline'), foreground="blue")
+            lbl.pack(side='right', padx=5)
+            lbl.bind("<Button-1>", lambda e: self._sort_customers(k))
+            
+            # Change cursor to hand
+            lbl.bind("<Enter>", lambda e: lbl.configure(cursor="hand2"))
+            lbl.bind("<Leave>", lambda e: lbl.configure(cursor=""))
+            
+            # Bind MouseWheel to header label
+            if hasattr(self, 'on_customer_scroll'):
+                lbl.bind("<MouseWheel>", self.on_customer_scroll)
+            
+            return lbl
+            
+        # Headers matching row widths: Name(20), Phone(15), Count(12), Total(18)
+        # Note: Row uses anchor='e', here we use center for headers or e? let's stick to e to align with data visually
+        make_header("שם לקוח", "name", 20)
+        make_header("טלפון", "phone", 15)
+        make_header("הזמנות", "count", 12)
+        make_header("סה\"כ", "total", 18)
+        
+        # Spacer for the +/- button
+        spacer = ttk.Label(header_frame, text="", width=5)
+        spacer.pack(side='left', padx=5)
+        if hasattr(self, 'on_customer_scroll'):
+            spacer.bind("<MouseWheel>", self.on_customer_scroll)
+            
+        sep = ttk.Separator(self.customers_list_frame, orient='horizontal')
+        sep.pack(fill='x', padx=5, pady=2)
+        if hasattr(self, 'on_customer_scroll'):
+            sep.bind("<MouseWheel>", self.on_customer_scroll)
+
+        # Render Rows
+        for contact in self.customers_data_cache:
+            self._add_customer_row(contact, self.customers_manager_ref)
+
+    def _sort_customers(self, key):
+        if self.customers_sort_state['key'] == key:
+            self.customers_sort_state['reverse'] = not self.customers_sort_state['reverse']
+        else:
+            self.customers_sort_state['key'] = key
+            # Default new sort: Descending for numbers, Ascending for text
+            if key in ['count', 'total']:
+                self.customers_sort_state['reverse'] = True
+            else:
+                self.customers_sort_state['reverse'] = False
+                
+        self._render_customer_list()
+
+    def _add_customer_row(self, contact, manager):
+        # Container for Row + Details
+        container = ttk.Frame(self.customers_list_frame)
+        container.pack(fill='x', pady=2, padx=5, anchor="e")
+
+        # Row Frame
+        row_frame = ttk.Frame(container, relief="solid", borderwidth=1)
+        row_frame.pack(fill='x', anchor="e")
+        
+        # Details Frame (initially not packed)
+        details_frame = ttk.Frame(container)
+
+        # Data
+        info = contact.get('info', {})
+        name = f"{info.get('name', {}).get('first', '')} {info.get('name', {}).get('last', '')}"
+        
+        # Removed Email
+        # emails = info.get('emails', [])
+        # email = emails[0].get('email') if emails else ""
+        
+        phones = info.get('phones', [])
+        phone = phones[0].get('phone') if phones else ""
+        
+        # New Stats
+        stats = contact.get('stats', {'count': 0, 'total': 0, 'currency': 'ILS'})
+        order_count = stats.get('count', 0)
+        total_spend = stats.get('total', 0)
+        currency = stats.get('currency', 'ILS')
+        
+        contact_id = contact.get('id')
+        
+        # Layout - Right to Left
+        
+        # 1. Name
+        ttk.Label(row_frame, text=name, width=20, anchor="e", font=('Helvetica', 10, 'bold')).pack(side='right', padx=5)
+        
+        # 2. Phone
+        ttk.Label(row_frame, text=phone, width=15, anchor="e").pack(side='right', padx=5)
+        
+        # 3. Order Count (New)
+        ttk.Label(row_frame, text=f"הזמנות: {order_count}", width=12, anchor="e").pack(side='right', padx=5)
+        
+        # 4. Total Amount (New) - formatted
+        ttk.Label(row_frame, text=f"סה\"כ: {total_spend:,.2f} {currency}", width=18, anchor="e").pack(side='right', padx=5)
+        
+        # Pass required filter info to the toggle function
+        force_filter = contact.get('force_name_filter', False)
+        filter_name = contact.get('filter_name', '')
+        
+        btn = ttk.Button(row_frame, text="+", width=3)
+        btn.configure(command=lambda: self.toggle_customer_details(details_frame, btn, contact_id, name, manager, force_filter, filter_name))
+        btn.pack(side='left', padx=5)
+        
+        # Bind MouseWheel to all elements in this row
+        if hasattr(self, 'on_customer_scroll'):
+            container.bind("<MouseWheel>", self.on_customer_scroll)
+            row_frame.bind("<MouseWheel>", self.on_customer_scroll)
+            details_frame.bind("<MouseWheel>", self.on_customer_scroll)
+            for widget in row_frame.winfo_children():
+                widget.bind("<MouseWheel>", self.on_customer_scroll)
+
+    def toggle_customer_details(self, details_frame, btn, contact_ids_str, customer_name, manager, force_filter=False, filter_name=''):
+        if details_frame.winfo_ismapped():
+            details_frame.pack_forget()
+            btn.configure(text="+")
+        else:
+            details_frame.pack(fill='both', expand=True, padx=10, pady=5)
+            btn.configure(text="-")
+            
+            # Populate if empty
+            if not details_frame.winfo_children():
+                 self.populate_customer_orders(details_frame, contact_ids_str, manager, force_filter, filter_name)
+
+    def populate_customer_orders(self, parent_frame, contact_ids_str, manager, force_filter=False, filter_name=''):
+        # Handle multiple IDs if present (joined by comma)
+        contact_ids = contact_ids_str.split(',')
+        
+        # Treeview
+        columns = ("date", "number", "total", "status", "cid")
+        tree = ttk.Treeview(parent_frame, columns=columns, show="headings", height=5) # height=5 for inline compact view
+        tree.heading("date", text="תאריך")
+        tree.heading("number", text="מספר הזמנה")
+        tree.heading("total", text="סה\"כ")
+        tree.heading("status", text="סטטוס תשלום")
+        tree.heading("cid", text="מזהה לקוח") # Debug info
+        
+        tree.column("date", width=150, anchor="center")
+        tree.column("number", width=100, anchor="center")
+        tree.column("total", width=100, anchor="center")
+        tree.column("status", width=100, anchor="center")
+        tree.column("cid", width=0, stretch=False) # Hidden
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side="right", fill="y")
+        tree.pack(fill='both', expand=True)
+        
+        # Loading indicator
+        loading_id = tree.insert("", "end", values=("טוען נתונים...", "", "", "", ""))
+
+        # Fetch orders
+        def fetch():
+            # Collect all orders from all IDs
+            all_found_orders = []
+            seen_order_numbers = set()
+            
+            for cid in contact_ids:
+                try:
+                    orders_data = manager.get_orders(customer_id=cid)
+                    if orders_data:
+                        orders = orders_data.get('orders', [])
+                        for order in orders:
+                            # Filter Logic
+                            # If force_filter is True, we only include order if Buyer Name matches
+                            if force_filter:
+                                b = order.get('buyerInfo', {})
+                                f = b.get('firstName', '')
+                                l = b.get('lastName', '')
+                                order_fname = f"{f} {l}".strip()
+                                # Simple check: is the filtered name inside the order name?
+                                # or exact match. 'filter_name' comes from our extraction logic
+                                if filter_name != order_fname:
+                                    continue
+                            
+                            num = order.get('number')
+                            if num not in seen_order_numbers:
+                                all_found_orders.append(order)
+                                seen_order_numbers.add(num)
+                except Exception as e:
+                    print(f"Error fetching for ID {cid}: {e}")
+            
+            # Clear loading
+            self.root.after(0, lambda: tree.delete(loading_id))
+
+            if not all_found_orders:
+                self.root.after(0, lambda: tree.insert("", "end", values=("לא נמצאו הזמנות", "", "", "", "")))
+                return
+            
+            # Sort by date
+            all_found_orders.sort(key=lambda x: x.get('dateCreated', ''), reverse=True)
+
+            for order in all_found_orders:
+                # Format data
+                created = order.get('dateCreated', '')
+                try:
+                    # Handle Z
+                    if created.endswith('Z'):
+                        created = created[:-1] + '+00:00'
+                    dt = datetime.fromisoformat(created)
+                    date_str = dt.strftime("%d/%m/%Y %H:%M")
+                except:
+                    date_str = created
+                
+                number = order.get('number', '')
+                totals = order.get('totals', {})
+                total = f"{totals.get('total', 0)} {order.get('currency', 'ILS')}"
+                status = order.get('paymentStatus', '')
+                
+                # Hidden Contact ID source for debugging
+                source_cid = order.get('buyerInfo', {}).get('contactId', '')
+                
+                self.root.after(0, lambda d=date_str, n=number, t=total, s=status, ci=source_cid: tree.insert("", "end", values=(d, n, t, s, ci)))
+        
+        threading.Thread(target=fetch, daemon=True).start()
 
 def check_single_instance():
     try:

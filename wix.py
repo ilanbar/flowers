@@ -422,6 +422,62 @@ class WixInventoryManager:
                 print(f"Response: {e.response.text}")
             raise e
 
+    def get_customers(self, limit=50, offset=0):
+        """
+        Retrieves a list of contacts/customers.
+        """
+        url = "https://www.wixapis.com/contacts/v4/contacts/query"
+        payload = {
+            "query": {
+                "paging": {
+                    "limit": limit,
+                    "offset": offset
+                }
+            }
+        }
+        
+        print(f"Fetching customers (offset={offset})...")
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching customers: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response Body: {e.response.text}")
+            return None
+        except Exception as e:
+            print(f"Error fetching customers: {e}")
+            return None
+
+    def get_orders(self, customer_id=None, limit=50, offset=0):
+        """
+        Retrieves orders, optionally filtered by customer ID.
+        """
+        url = "https://www.wixapis.com/stores/v2/orders/query"
+        
+        payload = {
+            "query": {
+                "paging": {
+                    "limit": limit,
+                    "offset": offset
+                }
+                # "sort": [{"dateCreated": "DESC"}] # Removed due to 400 Error. Default seems to be DESC.
+            }
+        }
+        
+        if customer_id:
+             filter_json = {"buyerInfo.contactId": {"$eq": customer_id}}
+             payload["query"]["filter"] = json.dumps(filter_json)
+
+        print(f"Fetching orders (customer_id={customer_id}, offset={offset})...")
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Error fetching orders: {e}")
+            return None
 
 # ============================================================================
 # EXAMPLE USAGE
