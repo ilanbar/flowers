@@ -2200,6 +2200,123 @@ class FlowerApp:
         # Auto-load products
         self.load_products_for_tab(category_id, silent=silent)
 
+    def get_wix_mapping(self, wix_id):
+        # Read from wix.xlsx
+        if not os.path.exists("wix.xlsx"):
+            return None
+        try:
+            df = pd.read_excel("wix.xlsx", sheet_name="Mappings")
+            # look for wix_id
+            # Ensure types match (convert to string)
+            df['Wix ID'] = df['Wix ID'].astype(str)
+            wix_id = str(wix_id)
+            
+            row = df[df['Wix ID'] == wix_id]
+            if not row.empty:
+                return row.iloc[0]['Local Bouquet']
+        except (ValueError, FileNotFoundError):
+             # Sheet might not exist or file error
+             pass
+        except Exception as e:
+            print(f"Error reading mapping: {e}")
+        return None
+
+    def save_wix_mapping(self, wix_id, wix_name, local_bouquet):
+        file_path = "wix.xlsx"
+        sheet_name = "Mappings"
+        
+        wix_id = str(wix_id)
+        
+        if os.path.exists(file_path):
+            try:
+                # Try to read all sheets
+                xls = pd.ExcelFile(file_path)
+                sheets = {}
+                for sheet in xls.sheet_names:
+                    try:
+                        sheets[sheet] = pd.read_excel(xls, sheet_name=sheet)
+                    except Exception:
+                        pass # Skip problematic sheets
+                
+                if sheet_name in sheets:
+                    df = sheets[sheet_name]
+                    # Ensure column is string
+                    if 'Wix ID' in df.columns:
+                        df['Wix ID'] = df['Wix ID'].astype(str)
+                    
+                    # Check if ID exists
+                    if wix_id in df['Wix ID'].values:
+                        df.loc[df['Wix ID'] == wix_id, 'Local Bouquet'] = local_bouquet
+                        # df.loc[df['Wix ID'] == wix_id, 'Wix Name'] = wix_name 
+                    else:
+                        new_row = pd.DataFrame([{"Wix ID": wix_id, "Wix Name": wix_name, "Local Bouquet": local_bouquet}])
+                        df = pd.concat([df, new_row], ignore_index=True)
+                else:
+                    df = pd.DataFrame([{"Wix ID": wix_id, "Wix Name": wix_name, "Local Bouquet": local_bouquet}])
+                
+                sheets[sheet_name] = df
+                
+                with pd.ExcelWriter(file_path) as writer:
+                    for s_name, s_df in sheets.items():
+                        s_df.to_excel(writer, sheet_name=s_name, index=False)
+                
+                self.mark_dirty()
+                        
+            except Exception as e:
+                messagebox.showerror("שגיאה", f"שגיאה בשמירת המיפוי: {e}")
+        else:
+            # Create new
+            try:
+                df = pd.DataFrame([{"Wix ID": wix_id, "Wix Name": wix_name, "Local Bouquet": local_bouquet}])
+                df.to_excel(file_path, sheet_name=sheet_name, index=False)
+                self.mark_dirty()
+            except Exception as e:
+                 messagebox.showerror("שגיאה", f"שגיאה ביצירת קובץ מיפוי: {e}")
+
+    def link_wix_to_local_bouquet(self, item_data, tree, item_id):
+        # Load local bouquets
+        all_bouquets = load_all_bouquets()
+        bouquet_names = sorted(list(all_bouquets.keys()))
+        
+        if not bouquet_names:
+            messagebox.showinfo("מידע", "לא נמצאו זרים מקומיים.")
+            return
+
+        # Load existing mapping if any
+        current_mapping = self.get_wix_mapping(item_data['id'])
+        
+        # Dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("חיבור מוצר לזר מקומי")
+        dialog.geometry("400x150")
+        
+        # Center dialog
+        try:
+            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 200
+            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 75
+            dialog.geometry(f"+{x}+{y}")
+        except:
+            pass
+
+        tk.Label(dialog, text=f"בחר זר מקומי עבור: {item_data.get('name', '???')}").pack(pady=10)
+        
+        combo = ttk.Combobox(dialog, values=bouquet_names, state="readonly")
+        combo.pack(fill='x', padx=20, pady=5)
+        
+        if current_mapping and current_mapping in bouquet_names:
+            combo.set(current_mapping)
+            
+        def save():
+            selected = combo.get()
+            if selected:
+                self.save_wix_mapping(item_data['id'], item_data.get('name', ''), selected)
+                # Update text to show connection?
+                # For now just confirming
+                messagebox.showinfo("הצלחה", f"המוצר חוב + ר בהצלחה ל-{selected}")
+                dialog.destroy()
+        
+        ttk.Button(dialog, text="שמור", command=save).pack(pady=10)
+
     def on_tree_double_click(self, event, frame):
         tree = frame.tree
         region = tree.identify("region", event.x, event.y)
@@ -2218,7 +2335,10 @@ class FlowerApp:
         current_values = tree.item(item_id, "values")
         
         # #0 is tree column, #1 is price, #2 is stock
-        if column == "#1": # Price
+        if column == "#0": # Product Name - Link to Local Bouquet
+            self.link_wix_to_local_bouquet(item_data, tree, item_id)
+        
+        elif column == "#1": # Price
             current_price_str = current_values[0] # Price is at index 0
             
             # Clean price string (remove currency symbol if present)
