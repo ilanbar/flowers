@@ -8,6 +8,7 @@ import sys
 import subprocess
 import threading
 import pandas as pd
+import webbrowser
 from datetime import datetime
 from collections import defaultdict
 
@@ -48,7 +49,7 @@ def ensure_data_files():
 ensure_data_files()
 
 from flower import FlowersTypes, FlowerColors, FlowerSizes, FlowerData
-from bouquet import Bouquet, load_all_bouquets
+from bouquet import Bouquet, load_all_bouquets, get_wix_id_map, set_bouquet_wix_id
 from wix import WixInventoryManager
 try:
     from drive_sync import DriveSync
@@ -840,8 +841,18 @@ class FlowerApp:
             return
         self.bouquets_listbox.delete(0, tk.END)
         names = sorted(self.get_bouquet_names())
-        for name in names:
+        
+        # Get mapping to highlight linked bouquets
+        try:
+            linked_map = get_wix_id_map()
+            linked_names = set(linked_map.values())
+        except:
+            linked_names = set()
+
+        for i, name in enumerate(names):
             self.bouquets_listbox.insert(tk.END, name)
+            if name in linked_names:
+                self.bouquets_listbox.itemconfigure(i, bg='#ccffcc') # Light green highlight
         
         self.based_on_combo['values'] = [""] + names
         self.based_on_combo.set("")
@@ -1155,6 +1166,38 @@ class FlowerApp:
             
         ttk.Button(edit_details_frame, text="עדכן פרטים", command=update_details).pack(fill='x', padx=5, pady=5)
 
+        # Wix Link Controls
+        try:
+            wix_map = get_wix_id_map()
+            linked_wix_id = None
+            for wid, bname in wix_map.items():
+                if bname == name:
+                    linked_wix_id = wid
+                    break
+            
+            if linked_wix_id:
+                wix_frame = ttk.LabelFrame(controls_frame, text="חיבור ל-Wix")
+                wix_frame.pack(fill='x', pady=5)
+                
+                def open_wix_product():
+                    site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+                    url = f"https://manage.wix.com/dashboard/{site_id}/store/products/{linked_wix_id}"
+                    webbrowser.open(url)
+                    
+                def unlock_wix():
+                    if messagebox.askyesno("אישור", "האם לנתק את החיבור למוצר ב-Wix?"):
+                        if set_bouquet_wix_id(name, None):
+                            # messagebox.showinfo("הצלחה", "החיבור הוסר.")
+                            editor.destroy()
+                            self.refresh_bouquets_list()
+                        else:
+                            messagebox.showerror("שגיאה", "שגיאה בהסרת החיבור.")
+
+                ttk.Button(wix_frame, text="פתח מוצר ב-Wix", command=open_wix_product).pack(fill='x', padx=5, pady=5)
+                ttk.Button(wix_frame, text="נתק חיבור ל-Wix", command=unlock_wix).pack(fill='x', padx=5, pady=5)
+        except Exception as e:
+            print(f"Error checking Wix link: {e}")
+
         def on_flower_select(event):
             selection = flowers_list.curselection()
             if selection:
@@ -1262,6 +1305,8 @@ class FlowerApp:
                 self.refresh_order_pricing_tab()
             elif tab_text == "מחירון":
                 self.refresh_global_pricing_tab()
+            elif tab_text == "זרים":
+                self.refresh_bouquets_list()
         except:
             pass
 
@@ -2202,79 +2247,34 @@ class FlowerApp:
         self.load_products_for_tab(category_id, silent=silent)
 
     def get_wix_mapping(self, wix_id):
-        # Read from wix.xlsx
-        if not os.path.exists("wix.xlsx"):
-            return None
+        # Read from Bouquets.xlsx via bouquet module
         try:
-            df = pd.read_excel("wix.xlsx", sheet_name="Mappings")
-            # look for wix_id
-            # Ensure types match (convert to string)
-            df['Wix ID'] = df['Wix ID'].astype(str)
-            wix_id = str(wix_id)
-            
-            row = df[df['Wix ID'] == wix_id]
-            if not row.empty:
-                return row.iloc[0]['Local Bouquet']
-        except (ValueError, FileNotFoundError):
-             # Sheet might not exist or file error
-             pass
+            mapping = get_wix_id_map()
+            return mapping.get(str(wix_id))
         except Exception as e:
             print(f"Error reading mapping: {e}")
         return None
 
     def save_wix_mapping(self, wix_id, wix_name, local_bouquet):
-        file_path = "wix.xlsx"
-        sheet_name = "Mappings"
-        
-        wix_id = str(wix_id)
-        
-        if os.path.exists(file_path):
-            try:
-                # Try to read all sheets
-                xls = pd.ExcelFile(file_path)
-                sheets = {}
-                for sheet in xls.sheet_names:
-                    try:
-                        sheets[sheet] = pd.read_excel(xls, sheet_name=sheet)
-                    except Exception:
-                        pass # Skip problematic sheets
-                
-                if sheet_name in sheets:
-                    df = sheets[sheet_name]
-                    # Ensure column is string
-                    if 'Wix ID' in df.columns:
-                        df['Wix ID'] = df['Wix ID'].astype(str)
-                    
-                    # Check if ID exists
-                    if wix_id in df['Wix ID'].values:
-                        df.loc[df['Wix ID'] == wix_id, 'Local Bouquet'] = local_bouquet
-                        # df.loc[df['Wix ID'] == wix_id, 'Wix Name'] = wix_name 
-                    else:
-                        new_row = pd.DataFrame([{"Wix ID": wix_id, "Wix Name": wix_name, "Local Bouquet": local_bouquet}])
-                        df = pd.concat([df, new_row], ignore_index=True)
-                else:
-                    df = pd.DataFrame([{"Wix ID": wix_id, "Wix Name": wix_name, "Local Bouquet": local_bouquet}])
-                
-                sheets[sheet_name] = df
-                
-                with pd.ExcelWriter(file_path) as writer:
-                    for s_name, s_df in sheets.items():
-                        s_df.to_excel(writer, sheet_name=s_name, index=False)
-                
+        try:
+            success = set_bouquet_wix_id(local_bouquet, wix_id)
+            if success:
                 self.mark_dirty()
-                        
-            except Exception as e:
-                messagebox.showerror("שגיאה", f"שגיאה בשמירת המיפוי: {e}")
-        else:
-            # Create new
-            try:
-                df = pd.DataFrame([{"Wix ID": wix_id, "Wix Name": wix_name, "Local Bouquet": local_bouquet}])
-                df.to_excel(file_path, sheet_name=sheet_name, index=False)
-                self.mark_dirty()
-            except Exception as e:
-                 messagebox.showerror("שגיאה", f"שגיאה ביצירת קובץ מיפוי: {e}")
+            else:
+                 messagebox.showerror("שגיאה", "שגיאה בשמירת המיפוי בקובץ Bouquets.xlsx")
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"שגיאה בשמירת המיפוי: {e}")
 
     def link_wix_to_local_bouquet(self, item_data, tree, item_id):
+        # Determine ID (Product or Variant)
+        wix_id = item_data.get('id')
+        if not wix_id:
+            wix_id = item_data.get('variant_id') # For variants
+            
+        if not wix_id:
+            messagebox.showerror("שגיאה", "לא ניתן לזהות את מזהה המוצר/וריאנט")
+            return
+
         # Load local bouquets
         all_bouquets = load_all_bouquets()
         bouquet_names = sorted(list(all_bouquets.keys()))
@@ -2284,7 +2284,7 @@ class FlowerApp:
             return
 
         # Load existing mapping if any
-        current_mapping = self.get_wix_mapping(item_data['id'])
+        current_mapping = self.get_wix_mapping(wix_id)
         
         # Dialog
         dialog = tk.Toplevel(self.root)
@@ -2301,19 +2301,46 @@ class FlowerApp:
 
         tk.Label(dialog, text=f"בחר זר מקומי עבור: {item_data.get('name', '???')}").pack(pady=10)
         
-        combo = ttk.Combobox(dialog, values=bouquet_names, state="readonly")
+        # Searchable Combobox
+        combo = ttk.Combobox(dialog) # Removed readonly state
+        combo['values'] = bouquet_names
         combo.pack(fill='x', padx=20, pady=5)
+        
+        def on_combo_keyrelease(event):
+            # Filter values based on typed text
+            if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Tab']:
+                return
+
+            typed = combo.get()
+            if typed == '':
+                combo['values'] = bouquet_names
+            else:
+                filtered = [x for x in bouquet_names if typed.lower() in x.lower()]
+                combo['values'] = filtered
+                if filtered:
+                     try:
+                        combo.event_generate('<<ComboboxSelected>>') # Optional: trigger generic update
+                     except:
+                        pass
+
+        combo.bind('<KeyRelease>', on_combo_keyrelease)
         
         if current_mapping and current_mapping in bouquet_names:
             combo.set(current_mapping)
             
         def save():
             selected = combo.get()
+            
+            # Validation: ensure selected item exists
+            if selected and selected not in bouquet_names:
+                messagebox.showerror("שגיאה", "אנא בחר זר קיים מהרשימה.")
+                return
+
             if selected:
-                self.save_wix_mapping(item_data['id'], item_data.get('name', ''), selected)
+                self.save_wix_mapping(wix_id, item_data.get('name', ''), selected)
                 # Update text to show connection?
                 # For now just confirming
-                messagebox.showinfo("הצלחה", f"המוצר חוב + ר בהצלחה ל-{selected}")
+                messagebox.showinfo("הצלחה", f"המוצר חובר בהצלחה ל-{selected}")
                 dialog.destroy()
         
         ttk.Button(dialog, text="שמור", command=save).pack(pady=10)
@@ -2321,7 +2348,8 @@ class FlowerApp:
     def on_tree_double_click(self, event, frame):
         tree = frame.tree
         region = tree.identify("region", event.x, event.y)
-        if region != "cell":
+        # Allow both 'cell' (data columns) and 'tree' (main column #0)
+        if region not in ("cell", "tree"):
             return
             
         column = tree.identify_column(event.x)
@@ -2563,73 +2591,107 @@ class FlowerApp:
             
         try:
             manager = WixInventoryManager(api_key, site_id, account_id)
-            # Use query_products_by_collection
-            result = manager.query_products_by_collection(category_id, limit=100)
             
-            if result and 'products' in result:
-                products = result['products']
-                for p in products:
-                    name = p.get('name', 'Unknown')
-                    sku = p.get('sku', '')
+            # Fetch ALL products using pagination
+            all_products = []
+            offset = 0
+            limit = 50 # Reduced to prevent large payloads/timeouts
+            
+            while True:
+                # Use query_products_by_collection
+                result = manager.query_products_by_collection(category_id, limit=limit, offset=offset)
+                
+                if result and 'products' in result:
+                    batch = result['products']
+                    if not batch:
+                        break
+                        
+                    all_products.extend(batch)
                     
-                    # Fix price extraction
-                    price_data = p.get('price', {})
-                    price = price_data.get('formatted', {}).get('price')
-                    if not price:
-                        price = price_data.get('price', 0)
-                    
-                    # Stock extraction
-                    stock_info = p.get('stock', {})
-                    stock_qty = stock_info.get('quantity', 0)
-                    # If quantity is None, it might be untracked or just inStock bool
-                    if stock_qty is None:
-                        stock_qty = 0
-                    
-                    visible = "כן" if p.get('visible', True) else "לא"
+                    if len(batch) < limit:
+                        break
+                        
+                    offset += limit
+                else:
+                    break
+            
+            print(f"DEBUG: Fetched {len(all_products)} products total.")
+            
+            if all_products:
+                for p in all_products:
+                    try:
+                        name = p.get('name', 'Unknown')
+                        # Debug print to trace breakage
+                        # print(f"Processing: {name}") 
+                        
+                        sku = p.get('sku', '')
+                        
+                        # Fix price extraction
+                        price_data = p.get('price', {})
+                        price = price_data.get('formatted', {}).get('price')
+                        if not price:
+                            price = price_data.get('price', 0)
+                        
+                        # Stock extraction
+                        stock_info = p.get('stock', {})
+                        stock_qty = stock_info.get('quantity', 0)
+                        # If quantity is None, it might be untracked or just inStock bool
+                        if stock_qty is None:
+                            stock_qty = 0
+                        
+                        visible = "כן" if p.get('visible', True) else "לא"
 
-                    # Insert parent
-                    parent_id = tree.insert("", tk.END, text=name, values=(price, stock_qty, visible))
-                    frame.tree_map[parent_id] = {'type': 'product', 'id': p['id'], 'name': name, 'visible': p.get('visible', True)}
-                    
-                    # Handle variants
-                    variants = p.get('variants', [])
-                    if variants:
-                        for v in variants:
-                            choices = v.get('choices', {})
-                            if not choices:
-                                continue
-                                
-                            variant_name = " / ".join(choices.values())
-                            
-                            v_details = v.get('variant', {})
-                            v_sku = v_details.get('sku', '')
-                            
-                            # Fix variant price extraction
-                            v_price_data = v_details.get('priceData', {})
-                            v_price = v_price_data.get('formatted', {}).get('price')
-                            if not v_price:
-                                v_price = v_price_data.get('price')
-                            
-                            print(f"DEBUG: Loaded variant {v['id']} price: {v_price}")
-                            
-                            if v_price is None: v_price = price
-                            
-                            v_stock = v.get('stock', {})
-                            v_stock_qty = v_stock.get('quantity', 0)
-                            if v_stock_qty is None:
-                                v_stock_qty = 0
-                            
-                            v_visible = "כן" if v_details.get('visible', True) else "לא"
+                        # Insert parent
+                        parent_id = tree.insert("", tk.END, text=name, values=(price, stock_qty, visible))
+                        frame.tree_map[parent_id] = {'type': 'product', 'id': p['id'], 'name': name, 'visible': p.get('visible', True)}
+                        
+                        # Handle variants
+                        variants = p.get('variants', [])
+                        if variants:
+                            for v in variants:
+                                try:
+                                    choices = v.get('choices', {})
+                                    if not choices:
+                                        continue
+                                        
+                                    variant_name = " / ".join(choices.values())
+                                    
+                                    v_details = v.get('variant', {})
+                                    v_sku = v_details.get('sku', '')
+                                    
+                                    # Fix variant price extraction
+                                    v_price_data = v_details.get('priceData', {})
+                                    v_price = v_price_data.get('formatted', {}).get('price')
+                                    if not v_price:
+                                        v_price = v_price_data.get('price')
+                                    
+                                    # print(f"DEBUG: Loaded variant {v.get('id')} price: {v_price}")
+                                    
+                                    if v_price is None: v_price = price
+                                    
+                                    v_stock = v.get('stock', {})
+                                    v_stock_qty = v_stock.get('quantity', 0)
+                                    if v_stock_qty is None:
+                                        v_stock_qty = 0
+                                    
+                                    v_visible = "כן" if v_details.get('visible', True) else "לא"
 
-                            child_id = tree.insert(parent_id, tk.END, text=variant_name, values=(v_price, v_stock_qty, v_visible))
-                            frame.tree_map[child_id] = {
-                                'type': 'variant', 
-                                'product_id': p['id'], 
-                                'variant_id': v['id'], 
-                                'name': variant_name,
-                                'choices': choices,
-                                'visible': v_details.get('visible', True)
-                            }
+                                    child_id = tree.insert(parent_id, tk.END, text=variant_name, values=(v_price, v_stock_qty, v_visible))
+                                    frame.tree_map[child_id] = {
+                                        'type': 'variant', 
+                                        'product_id': p['id'], 
+                                        'variant_id': v.get('id'), 
+                                        'name': variant_name,
+                                        'choices': choices,
+                                        'visible': v_details.get('visible', True)
+                                    }
+                                except Exception as e:
+                                    print(f"Error processing variant for {name}: {e}")
+                                    continue
+
+                    except Exception as e:
+                        print(f"Error processing product {p.get('id', '?')}: {e}")
+                        continue
                 
                 # messagebox.showinfo("הצלחה", f"נטענו {len(products)} מוצרים.")
             else:

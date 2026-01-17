@@ -48,9 +48,9 @@ class WixInventoryManager:
     def query_products_by_collection(self, collection_id: str, limit: int = 100, 
                                      offset: int = 0, include_variants: bool = True):
         """
-        Query products from a specific collection
+        Query products from a specific collection using Management API (shows hidden/out-of-stock)
         """
-        url = "https://www.wixapis.com/stores-reader/v1/products/query"
+        url = "https://www.wixapis.com/stores/v1/products/query?includeHiddenProducts=true"
         
         # Filter by collection ID
         filter_json = {
@@ -84,9 +84,9 @@ class WixInventoryManager:
     def get_store_products(self, limit=50, offset=0, include_variants=True):
         """
         Retrieves a list of products from the store.
-        Uses Wix Stores Reader API v1 Query endpoint.
+        Uses Wix Stores Management API v1 Query endpoint.
         """
-        url = "https://www.wixapis.com/stores-reader/v1/products/query"
+        url = "https://www.wixapis.com/stores/v1/products/query?includeHiddenProducts=true"
         
         payload = {
             "query": {
