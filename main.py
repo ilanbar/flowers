@@ -49,7 +49,7 @@ def ensure_data_files():
 ensure_data_files()
 
 from flower import FlowersTypes, FlowerColors, FlowerSizes, FlowerData
-from bouquet import Bouquet, load_all_bouquets, get_wix_id_map, set_bouquet_wix_id
+from bouquet import Bouquet, load_all_bouquets, get_wix_id_map, set_bouquet_wix_id, get_bouquet_wix_data, update_wix_categories_batch
 from wix import WixInventoryManager
 try:
     from drive_sync import DriveSync
@@ -344,7 +344,7 @@ class FlowerApp:
         file_menu.add_command(label="שמור ל-Drive", command=self.sync_to_drive)
         
         if getattr(sys, 'frozen', False):
-            file_menu.add_command(label="הורד גירסה", command=self.download_new_version)
+            file_menu.add_command(label="עדכן תוכנה וסגור", command=self.download_new_version)
         
         # Developer options (only if not frozen)
         if not getattr(sys, 'frozen', False):
@@ -448,15 +448,60 @@ class FlowerApp:
              messagebox.showerror("שגיאה", "סנכרון אינו זמין.")
              return
 
-        if messagebox.askyesno("הורד גירסה", "האם להוריד גירסה חדשה מ-Google Drive?"):
+        if messagebox.askyesno("עדכון תוכנה", "פעולה זו תוריד את הגירסה החדשה, תתקין אותה ותסגור את התוכנה.\nהאם להמשיך?"):
             try:
                 success = self.drive_sync.download_file_as("FlowerShopManager.exe", "FlowerShopManager_new.exe")
                 if success:
-                    messagebox.showinfo("הצלחה", "הגירסה החדשה הורדה כ-FlowerShopManager_new.exe.\nיש לסגור את התוכנה ולהחליף את הקובץ.")
+                    # Create updater batch script
+                    pid = os.getpid()
+                    batch_script = f"""
+@echo off
+title Updating FlowerShopManager...
+echo Waiting for application (PID {pid}) to close...
+
+:wait_loop
+tasklist /FI "PID eq {pid}" 2>NUL | find /I /N "{pid}" >NUL
+if "%ERRORLEVEL%"=="0" (
+    timeout /t 1 >NUL
+    goto wait_loop
+)
+
+echo Installing update...
+timeout /t 1 >NUL
+
+rem Backup old version
+if exist FlowerShopManager.exe (
+    del FlowerShopManager_old.exe 2>NUL
+    move /y FlowerShopManager.exe FlowerShopManager_old.exe >NUL
+)
+
+if exist FlowerShopManager_new.exe (
+    move /y FlowerShopManager_new.exe FlowerShopManager.exe >NUL
+    echo Update successfully installed!
+) else (
+    echo Error: New version file not found!
+    pause
+)
+
+timeout /t 2 >NUL
+rem Self-delete script
+del "%~f0" & exit
+"""
+                    script_path = "update_install.bat"
+                    with open(script_path, "w") as f:
+                        f.write(batch_script)
+                    
+                    # Launch batch script detached
+                    subprocess.Popen([script_path], shell=True)
+                    
+                    # Close application
+                    self.root.destroy()
+                    sys.exit(0)
+                        
                 else:
                     messagebox.showerror("שגיאה", "הקובץ FlowerShopManager.exe לא נמצא ב-Drive.")
             except Exception as e:
-                messagebox.showerror("שגיאה", f"נכשל בהורדה: {e}")
+                messagebox.showerror("שגיאה", f"נכשל בהורדה/עדכון: {e}")
 
     def create_backup(self):
         try:
@@ -844,15 +889,71 @@ class FlowerApp:
         
         # Get mapping to highlight linked bouquets
         try:
-            linked_map = get_wix_id_map()
-            linked_names = set(linked_map.values())
+            bouquet_wix_data = get_bouquet_wix_data() # Returns {name: {id: ..., category: ...}}
         except:
-            linked_names = set()
+            bouquet_wix_data = {}
+
+        updates_needed = {} # name -> (id, category)
 
         for i, name in enumerate(names):
-            self.bouquets_listbox.insert(tk.END, name)
-            if name in linked_names:
+            display_name = name
+            wix_info = bouquet_wix_data.get(name)
+            
+            if wix_info and wix_info.get('id'):
+                wix_id = str(wix_info.get('id'))
+                cat = wix_info.get('category')
+                
+                # Try to resolve category if missing
+                if not cat and hasattr(self, 'category_tabs'):
+                    # Search in loaded tabs
+                    for cid, frame in self.category_tabs.items():
+                        if not hasattr(frame, 'tree_map'):
+                            continue
+                        
+                        # Check if wix_id is in this category's products
+                        # frame.tree_map values look like: {'type': 'product', 'id': '...', ...}
+                        found_in_tab = False
+                        for item in frame.tree_map.values():
+                            if str(item.get('id')) == wix_id:
+                                found_in_tab = True
+                                break
+                        
+                        if found_in_tab:
+                            # Found the category!
+                            # Resolve category name
+                            for c in self.wix_categories:
+                                if c['id'] == cid:
+                                    cat = c['name']
+                                    break
+                            
+                            if not cat:
+                                try:
+                                    # Fallback to tab text
+                                    idx = self.right_notebook.index(frame)
+                                    cat = self.right_notebook.tab(idx, "text")
+                                except:
+                                    pass
+                            
+                            if cat:
+                                updates_needed[name] = (wix_id, cat)
+                            break
+
+                if cat:
+                    display_name = f"{name} ({cat})"
+                
+                self.bouquets_listbox.insert(tk.END, display_name)
                 self.bouquets_listbox.itemconfigure(i, bg='#ccffcc') # Light green highlight
+            else:
+                self.bouquets_listbox.insert(tk.END, display_name)
+        
+        # Perform batch update if we found missing categories
+        if updates_needed:
+            # Run in thread to not block UI
+            def run_batch_update():
+                print(f"Auto-healing {len(updates_needed)} missing categories...")
+                update_wix_categories_batch(updates_needed)
+            
+            threading.Thread(target=run_batch_update, daemon=True).start()
         
         self.based_on_combo['values'] = [""] + names
         self.based_on_combo.set("")
@@ -971,7 +1072,16 @@ class FlowerApp:
         selection = self.bouquets_listbox.curselection()
         if not selection:
             return
-        name = self.bouquets_listbox.get(selection[0])
+        
+        # Get raw name from display string "name (category)"
+        display_text = self.bouquets_listbox.get(selection[0])
+        name = display_text
+        if " (" in display_text and display_text.endswith(")"):
+            # A bit risky if name contains " (", but likely the last one is category
+            # Find last occurrence of " ("
+            last_paren = display_text.rfind(" (")
+            if last_paren != -1:
+                name = display_text[:last_paren]
         
         try:
             bouquet = Bouquet(name, load_existing=True)
@@ -1306,9 +1416,14 @@ class FlowerApp:
             elif tab_text == "מחירון":
                 self.refresh_global_pricing_tab()
             elif tab_text == "זרים":
+                # Ensure we have the latest visual state
                 self.refresh_bouquets_list()
-        except:
-            pass
+            else:
+                # Still try to refresh bouquets list if we are navigating away or to something else?
+                # No, only when entering "Bouquets"
+                pass
+        except Exception as e:
+            print(f"Tab change error: {e}")
 
     def refresh_order_bouquets(self):
         names = sorted(self.get_bouquet_names())
@@ -2047,6 +2162,10 @@ class FlowerApp:
             self.wix_categories = collections
             self.refresh_wix_categories_list()
             self.update_category_tabs()
+            
+            # Refresh bouquets to show categories
+            self.refresh_bouquets_list()
+
             if not silent:
                 messagebox.showinfo("הצלחה", f"נטענו {len(collections)} קטגוריות.")
             
@@ -2255,9 +2374,9 @@ class FlowerApp:
             print(f"Error reading mapping: {e}")
         return None
 
-    def save_wix_mapping(self, wix_id, wix_name, local_bouquet):
+    def save_wix_mapping(self, wix_id, wix_name, local_bouquet, category_name=None):
         try:
-            success = set_bouquet_wix_id(local_bouquet, wix_id)
+            success = set_bouquet_wix_id(local_bouquet, wix_id, category_name)
             if success:
                 self.mark_dirty()
             else:
@@ -2265,7 +2384,7 @@ class FlowerApp:
         except Exception as e:
             messagebox.showerror("שגיאה", f"שגיאה בשמירת המיפוי: {e}")
 
-    def link_wix_to_local_bouquet(self, item_data, tree, item_id):
+    def link_wix_to_local_bouquet(self, item_data, tree, item_id, category_name=None):
         # Determine ID (Product or Variant)
         wix_id = item_data.get('id')
         if not wix_id:
@@ -2337,7 +2456,31 @@ class FlowerApp:
                 return
 
             if selected:
-                self.save_wix_mapping(wix_id, item_data.get('name', ''), selected)
+                self.save_wix_mapping(wix_id, item_data.get('name', ''), selected, category_name)
+                # Refresh bouquets list slightly delayed to ensure file write completes/propagates if needed
+                # But actually synchronous write should be done.
+                self.refresh_bouquets_list() 
+                
+                # Also reload the current category tab to show green highlight
+                try:
+                    # Find category id for this tree
+                    # tree is stored in frame, frame stored in self.category_tabs
+                    current_cat_id = None
+                    for cid, f in self.category_tabs.items():
+                        if f.tree == tree:
+                            current_cat_id = cid
+                            break
+                    
+                    if current_cat_id:
+                        # We don't want to re-fetch from API completely if possible, 
+                        # but load_products_for_tab does re-fetch.
+                        # Maybe just update the specific item tag?
+                        # Re-fetching is safer but slower. 
+                        # Let's just update the item tag for immediate feedback.
+                        tree.item(item_id, tags=('linked',))
+                except Exception as e:
+                    print(f"Error updating tree highlight: {e}")
+
                 # Update text to show connection?
                 # For now just confirming
                 messagebox.showinfo("הצלחה", f"המוצר חובר בהצלחה ל-{selected}")
@@ -2365,7 +2508,33 @@ class FlowerApp:
         
         # #0 is tree column, #1 is price, #2 is stock
         if column == "#0": # Product Name - Link to Local Bouquet
-            self.link_wix_to_local_bouquet(item_data, tree, item_id)
+            # Find category name
+            category_name = None
+            for cid, f in self.category_tabs.items():
+                if f.tree == tree:
+                    # Look up name in wix_categories
+                    # First try to find in self.wix_categories
+                    found = False
+                    for c in self.wix_categories:
+                        if c['id'] == cid:
+                            category_name = c['name']
+                            found = True
+                            break
+                    
+                    if not found:
+                        # Fallback to tab text
+                        try:
+                            # Note: self.right_notebook tabs might not exactly match ID order logic easily
+                            # But we know the frame 'f' is one of the tabs.
+                            # We can get the tab text if we find the index of f
+                            idx = self.right_notebook.index(f)
+                            category_name = self.right_notebook.tab(idx, "text")
+                        except:
+                             pass
+                    break
+                    
+            print(f"DEBUG: Linking with category: {category_name}")
+            self.link_wix_to_local_bouquet(item_data, tree, item_id, category_name)
         
         elif column == "#1": # Price
             current_price_str = current_values[0] # Price is at index 0
@@ -2592,6 +2761,15 @@ class FlowerApp:
         try:
             manager = WixInventoryManager(api_key, site_id, account_id)
             
+            # Get Wix Mapping
+            try:
+                wix_map = get_wix_id_map() # Wix ID -> Bouquet Name
+                # To quickly check if product is linked, we check keys
+                # We want: linked_product_ids = set(wix_map.keys())
+                linked_wix_ids = set(wix_map.keys())
+            except:
+                linked_wix_ids = set()
+            
             # Fetch ALL products using pagination
             all_products = []
             offset = 0
@@ -2640,9 +2818,13 @@ class FlowerApp:
                             stock_qty = 0
                         
                         visible = "כן" if p.get('visible', True) else "לא"
+                        
+                        # Check if linked
+                        is_linked = str(p['id']) in linked_wix_ids
+                        tags = ('linked',) if is_linked else ()
 
                         # Insert parent
-                        parent_id = tree.insert("", tk.END, text=name, values=(price, stock_qty, visible))
+                        parent_id = tree.insert("", tk.END, text=name, values=(price, stock_qty, visible), tags=tags)
                         frame.tree_map[parent_id] = {'type': 'product', 'id': p['id'], 'name': name, 'visible': p.get('visible', True)}
                         
                         # Handle variants
@@ -2675,8 +2857,13 @@ class FlowerApp:
                                         v_stock_qty = 0
                                     
                                     v_visible = "כן" if v_details.get('visible', True) else "לא"
+                                    
+                                    # Check if variant is linked
+                                    v_id = v.get('id')
+                                    is_v_linked = str(v_id) in linked_wix_ids if v_id else False
+                                    v_tags = ('linked',) if is_v_linked else ()
 
-                                    child_id = tree.insert(parent_id, tk.END, text=variant_name, values=(v_price, v_stock_qty, v_visible))
+                                    child_id = tree.insert(parent_id, tk.END, text=variant_name, values=(v_price, v_stock_qty, v_visible), tags=v_tags)
                                     frame.tree_map[child_id] = {
                                         'type': 'variant', 
                                         'product_id': p['id'], 
@@ -2697,6 +2884,9 @@ class FlowerApp:
             else:
                 if not silent:
                     messagebox.showinfo("מידע", "לא נמצאו מוצרים או שגיאה בטעינה.")
+            
+            # Configure tag colors
+            tree.tag_configure('linked', background='#ccffcc') # Light green
                 
         except Exception as e:
             if not silent:

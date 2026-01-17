@@ -8,6 +8,7 @@ from collections import defaultdict
 import json
 import pandas as pd
 import os
+import numpy as np # Added for NaN handling
 
 def load_all_bouquets():
     all_bouquets = {}
@@ -50,12 +51,26 @@ def save_all_bouquets(all_bouquets):
     if os.path.exists("Bouquets.xlsx"):
         try:
             old_df = pd.read_excel("Bouquets.xlsx")
-            if "Wix ID" in old_df.columns:
+            has_wix_id = "Wix ID" in old_df.columns
+            has_wix_cat = "Wix Category" in old_df.columns
+            
+            if has_wix_id or has_wix_cat:
                  # Group by bouquet name and take the first value (assuming same ID for whole bouquet)
                  for name, group in old_df.groupby("Bouquet Name"):
-                     first_valid = group["Wix ID"].dropna().first()
-                     if pd.notna(first_valid):
-                         existing_extra_data[name] = {"Wix ID": str(first_valid)}
+                     extra = {}
+                     if has_wix_id:
+                         valid_ids = group["Wix ID"].dropna()
+                         if not valid_ids.empty:
+                             first_valid = valid_ids.iloc[0]
+                             extra["Wix ID"] = str(first_valid)
+                     if has_wix_cat:
+                         valid_cats = group["Wix Category"].dropna()
+                         if not valid_cats.empty:
+                             first_cat = valid_cats.iloc[0]
+                             extra["Wix Category"] = str(first_cat)
+                             
+                     if extra:
+                         existing_extra_data[name] = extra
         except Exception:
             pass
 
@@ -64,6 +79,7 @@ def save_all_bouquets(all_bouquets):
         # Get extra data
         extra = existing_extra_data.get(b_name, {})
         wix_id = extra.get("Wix ID", None)
+        wix_cat = extra.get("Wix Category", None)
 
         if not flowers:
             # Save empty bouquet
@@ -76,6 +92,8 @@ def save_all_bouquets(all_bouquets):
             }
             if wix_id:
                 row["Wix ID"] = wix_id
+            if wix_cat:
+                row["Wix Category"] = wix_cat
             data.append(row)
             continue
 
@@ -94,12 +112,16 @@ def save_all_bouquets(all_bouquets):
             }
             if wix_id:
                 row["Wix ID"] = wix_id
+            if wix_cat:
+                row["Wix Category"] = wix_cat
             data.append(row)
     
     # columns order
     cols = ["Bouquet Name", "Flower Name", "Color", "Size", "Count"]
     if any("Wix ID" in d for d in data):
         cols.append("Wix ID")
+    if any("Wix Category" in d for d in data):
+        cols.append("Wix Category")
 
     df = pd.DataFrame(data, columns=cols)
     try:
@@ -125,50 +147,145 @@ def get_wix_id_map():
             pass
     return mapping
 
-def set_bouquet_wix_id(bouquet_name, wix_id):
+def get_bouquet_wix_data():
+    """Returns a dict mapping Bouquet Name -> {'id': ..., 'category': ...}"""
+    mapping = {}
+    if os.path.exists("Bouquets.xlsx"):
+        try:
+            df = pd.read_excel("Bouquets.xlsx")
+            required_cols = {"Bouquet Name"}
+            if not required_cols.issubset(df.columns):
+                return mapping
+            
+            # Check existing columns
+            has_wix_id = "Wix ID" in df.columns
+            has_wix_cat = "Wix Category" in df.columns
+            
+            if has_wix_id:
+                grouped = df.groupby("Bouquet Name")
+                for name, group in grouped:
+                    # Get first non-null Wix ID
+                    valid_ids = group["Wix ID"].dropna()
+                    if not valid_ids.empty:
+                        first_valid = valid_ids.iloc[0]
+                        data = {"id": str(first_valid)}
+                        if has_wix_cat:
+                             valid_cats = group["Wix Category"].dropna()
+                             if not valid_cats.empty:
+                                 cat = valid_cats.iloc[0]
+                                 data["category"] = str(cat)
+                        mapping[name] = data
+        except Exception as e:
+            print(f"Error loading bouquet WIX data: {e}")
+            pass
+    return mapping
+
+def set_bouquet_wix_id(bouquet_name, wix_id, wix_category=None):
     """Updates the Wix ID for a specific bouquet in Bouquets.xlsx"""
     # Simply load, update internal map, save
-    all_bouquets = load_all_bouquets()
-    
-    # We need to inject the ID into the save process. 
-    # Since save_all_bouquets reads from file to preserve ID, 
-    # but we want to CHANGE it, we can't rely on it reading the OLD value.
-    # We need to temporarily force the new value.
-    # Actually, save_all_bouquets relies on reading the file to get 'existing_extra_data'.
-    # So if we want to update it, we should modify the file directly or 
-    # pass the override to save_all_bouquets?
-    # Modifying save_all_bouquets signature is cleaner but affects callers.
-    # Let's read, modify DF, and write.
+    # all_bouquets = load_all_bouquets() # Not needed if we edit DF directly
     
     if os.path.exists("Bouquets.xlsx"):
         try:
             df = pd.read_excel("Bouquets.xlsx")
             if "Wix ID" not in df.columns:
                 df["Wix ID"] = None
+            if "Wix Category" not in df.columns:
+                df["Wix Category"] = None
             
             # Ensure column is object/string
             df["Wix ID"] = df["Wix ID"].astype(object)
+            df["Wix Category"] = df["Wix Category"].astype(object)
             
             # Update rows for this bouquet
             # Note: wix_id should be string
             if wix_id is None:
-                df.loc[df["Bouquet Name"] == bouquet_name, "Wix ID"] = None
+                # Need to use None or np.nan, but usually None works for object column
+                # However, simple assignment might not work if it's considered scalar vs series
+                df.loc[df["Bouquet Name"] == bouquet_name, "Wix ID"] = np.nan
+                df.loc[df["Bouquet Name"] == bouquet_name, "Wix Category"] = np.nan
             else:
                 df.loc[df["Bouquet Name"] == bouquet_name, "Wix ID"] = str(wix_id)
+                if wix_category:
+                    df.loc[df["Bouquet Name"] == bouquet_name, "Wix Category"] = str(wix_category)
+                else:
+                    # Keep existing category if not provided? Or clear it? 
+                    # If we set ID, usually meaningful to set Category or clear it if it's a new link.
+                    # But if we just update ID without category info, we might want to keep it?
+                    # Let's assume passed None means "unknown", so maybe keep existing if any, or clear?
+                    # Safer to clear if we don't know, to avoid mismatch.
+                    # But the caller might not know category.
+                    # Let's leave it as is if None.
+                    pass
             
             # Optional: Clear this Wix ID from other bouquets to enforce 1-to-1?
-            # Creating ambiguity if 1-to-many is allowed. Let's allow 1-to-many (multiple bouquets to one ID? No, one ID to multiple bouquets? No, wix_id is unique per product)
-            # If wix_id maps to "Summer", and we set "Winter" to wix_id, then wix_id maps to "Winter". "Summer" keeps wix_id?
-            # If "Summer" has "123", and "Winter" has "123". get_wix_id_map will return one or the other (last one iterated).
-            # So we should probably clear "123" from other bouquets.
             if wix_id is not None:
-                df.loc[(df["Wix ID"] == str(wix_id)) & (df["Bouquet Name"] != bouquet_name), "Wix ID"] = None
+                mask = (df["Wix ID"] == str(wix_id)) & (df["Bouquet Name"] != bouquet_name)
+                df.loc[mask, "Wix ID"] = np.nan
+                df.loc[mask, "Wix Category"] = np.nan
 
             df.to_excel("Bouquets.xlsx", index=False)
             return True
         except Exception as e:
             print(f"Error updating Wix ID: {e}")
             return False
+    return False
+
+def update_wix_categories_batch(updates):
+    """
+    Updates Wix categories for multiple bouquets at once.
+    updates: dict {bouquet_name: (wix_id, category_name)}
+    """
+    if not updates or not os.path.exists("Bouquets.xlsx"):
+        return False
+
+    try:
+        df = pd.read_excel("Bouquets.xlsx")
+        if "Wix ID" not in df.columns:
+            df["Wix ID"] = None
+        if "Wix Category" not in df.columns:
+            df["Wix Category"] = None
+        
+        df["Wix ID"] = df["Wix ID"].astype(object)
+        df["Wix Category"] = df["Wix Category"].astype(object)
+        
+        changed = False
+        for name, (wix_id, category) in updates.items():
+            if not category:
+                continue
+                
+            # Filter rows for this bouquet
+            mask = df["Bouquet Name"] == name
+            if not df.loc[mask].empty:
+                # Only update if the Wix ID matches (double check validity)
+                # Or just force update if we trust the caller
+                current_id_series = df.loc[mask, "Wix ID"]
+                
+                # Check if we are updating the correct link
+                # Logic: If Wix ID matches the one we want to update category for
+                # Using str() for comparison
+                
+                # Let's simplify: Update category for all rows of this bouquet 
+                # where Wix ID matches the provided ID
+                
+                # Iterate indices to be safe
+                for idx in df.index[mask]:
+                    current_id = df.at[idx, "Wix ID"]
+                    if pd.isna(current_id):
+                        continue
+                        
+                    if str(current_id) == str(wix_id):
+                        df.at[idx, "Wix Category"] = str(category)
+                        changed = True
+        
+        if changed:
+            df.to_excel("Bouquets.xlsx", index=False)
+            return True
+            
+    except Exception as e:
+        print(f"Error executing batch update: {e}")
+        return False
+        
     return False
 
 
