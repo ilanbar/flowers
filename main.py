@@ -3908,16 +3908,17 @@ del "%~f0" & exit
         ttk.Button(toolbar, text="הצג סיכום לביצוע", command=self.load_unfulfilled_summary).pack(side='right')
         ttk.Button(toolbar, text="ייצוא לאקסל", command=self.export_summary_to_excel).pack(side='left')
 
-        # Treeview for results (Product, Quantity, Order Count)
-        columns = ("product", "quantity", "orders_count")
-        self.summary_tree = ttk.Treeview(self.wix_summary_tab, columns=columns, show="headings", height=20)
-        self.summary_tree.heading("product", text="מוצר")
+        # Treeview: tree column holds product name (with area as parent row),
+        # plus quantity and order count columns
+        columns = ("quantity", "orders_count")
+        self.summary_tree = ttk.Treeview(self.wix_summary_tab, columns=columns, show="tree headings", height=20)
+        self.summary_tree.heading("#0", text="מוצר / אזור משלוח")
         self.summary_tree.heading("quantity", text="כמות כוללת")
         self.summary_tree.heading("orders_count", text="מס' הזמנות")
         
-        self.summary_tree.column("product", anchor="e", width=250)
-        self.summary_tree.column("quantity", anchor="center", width=100)
-        self.summary_tree.column("orders_count", anchor="center", width=100)
+        self.summary_tree.column("#0", anchor="e", width=300, stretch=True)
+        self.summary_tree.column("quantity", anchor="center", width=110)
+        self.summary_tree.column("orders_count", anchor="center", width=110)
         
         # Scrollbar
         scrollbar = ttk.Scrollbar(self.wix_summary_tab, orient="vertical", command=self.summary_tree.yview)
@@ -3949,58 +3950,70 @@ del "%~f0" & exit
         manager = WixInventoryManager(api_key, site_id, account_id)
         
         # Show loading indicator
-        self.summary_tree.insert("", "end", values=("טוען נתונים...", "", ""), tags=('loading',))
+        self.summary_tree.insert("", "end", text="טוען נתונים...", values=("", ""), tags=('loading',))
         
         self.current_summary_data = [] # Store for export
         
         def fetch_thread():
             error_msg = None
-            product_summary = {}
+            # area_summary: { area -> { product_name -> {'qty': int, 'orders': set} } }
+            area_summary = {}
             
             try:
                 all_orders = []
                 offset = 0
-                batch_size = 50 
+                batch_size = 50
                 
                 while True:
                     data = manager.get_orders(limit=batch_size, offset=offset, fulfillment_status="NOT_FULFILLED")
                     if not data:
                         break
-                        
                     orders_batch = data.get('orders', [])
                     if not orders_batch:
                         break
-                        
                     all_orders.extend(orders_batch)
-                    
                     if len(orders_batch) < batch_size:
-                        break # End of list
-                        
+                        break
                     offset += len(orders_batch)
 
-                # Process Data
+                # Enrich each order with delivery area from eCommerce v1 API
                 for order in all_orders:
-                    order_number = order.get('number', 'Unknown')
+                    order_number = str(order.get('number', 'Unknown'))
+                    order_id = order.get('id', '')
+
+                    delivery_area = "לא ידוע"
+                    if order_id:
+                        ecom_order = manager.get_order_ecom(order_id)
+                        if ecom_order:
+                            user_fields = (
+                                ecom_order
+                                .get('extendedFields', {})
+                                .get('namespaces', {})
+                                .get('_user_fields', {})
+                            )
+                            delivery_area = user_fields.get('form_field_1', 'לא ידוע') or 'לא ידוע'
+
+                    if delivery_area not in area_summary:
+                        area_summary[delivery_area] = {}
+
                     line_items = order.get('lineItems', [])
                     for item in line_items:
                         raw_name = item.get('name', 'Unknown')
                         if isinstance(raw_name, dict):
-                            # Handle translated names or complex objects
                             name = raw_name.get('translated', str(raw_name))
                         else:
                             name = str(raw_name) if raw_name else "Unknown"
-                            
                         qty = item.get('quantity', 0)
-                        
-                        if name not in product_summary:
-                            product_summary[name] = {'qty': 0, 'orders': set()}
-                        
-                        product_summary[name]['qty'] += qty
-                        product_summary[name]['orders'].add(order_number)
+
+                        if name not in area_summary[delivery_area]:
+                            area_summary[delivery_area][name] = {'qty': 0, 'orders': set()}
+                        area_summary[delivery_area][name]['qty'] += qty
+                        area_summary[delivery_area][name]['orders'].add(order_number)
 
             except Exception as e:
                 error_msg = str(e)
                 print(f"Error fetching summary: {e}")
+                import traceback; traceback.print_exc()
 
             def update_ui():
                 # Clear loading
@@ -4010,21 +4023,40 @@ del "%~f0" & exit
                 if error_msg:
                     messagebox.showerror("שגיאה", f"נכשל במשיכת נתונים: {error_msg}")
                     return
-                    
-                sorted_items = sorted(product_summary.items(), key=lambda x: x[0])
+
                 self.current_summary_data = []
-                for name, data in sorted_items:
-                    self.current_summary_data.append({
-                        "Product": name,
-                        "Total Quantity": data['qty'],
-                        "Order Count": len(data['orders']),
-                        "Order Numbers": ", ".join(sorted(list(data['orders'])))
-                    })
-                    self.summary_tree.insert("", "end", values=(name, data['qty'], len(data['orders'])))
-                
-                if not sorted_items:
-                     # Just an empty list is fine
-                     pass 
+                for area in sorted(area_summary.keys()):
+                    products = area_summary[area]
+                    area_total_qty = sum(p['qty'] for p in products.values())
+                    area_order_count = len({o for p in products.values() for o in p['orders']})
+                    # Insert collapsible area header row
+                    area_node = self.summary_tree.insert(
+                        "", "end",
+                        text=f"  {area}",
+                        values=(area_total_qty, area_order_count),
+                        open=True,
+                        tags=('area_header',)
+                    )
+                    for name in sorted(products.keys()):
+                        pdata = products[name]
+                        self.current_summary_data.append({
+                            "Delivery Area": area,
+                            "Product": name,
+                            "Total Quantity": pdata['qty'],
+                            "Order Count": len(pdata['orders']),
+                            "Order Numbers": ", ".join(sorted(pdata['orders']))
+                        })
+                        self.summary_tree.insert(
+                            area_node, "end",
+                            text=f"    {name}",
+                            values=(pdata['qty'], len(pdata['orders']))
+                        )
+
+                # Style area header rows bold-ish via tag
+                try:
+                    self.summary_tree.tag_configure('area_header', background='#d0e8ff')
+                except Exception:
+                    pass
 
             self.root.after(0, update_ui)
 
@@ -4047,29 +4079,80 @@ del "%~f0" & exit
             return
 
         try:
-            # Create DataFrame
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
+
             df = pd.DataFrame(self.current_summary_data)
-            
-            # Translate Headers for the Excel file
-            column_mapping = {
+
+            col_heb = {
+                "Delivery Area": "אזור משלוח",
                 "Product": "שם המוצר",
                 "Total Quantity": "כמות כוללת",
                 "Order Count": "מספר הזמנות",
                 "Order Numbers": "מספרי הזמנות"
             }
-            df = df.rename(columns=column_mapping)
-            
-            # Write to Excel
+
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name="סיכום")
-                
-                # Auto-adjust columns
-                worksheet = writer.sheets['סיכום']
-                for i, col in enumerate(df.columns):
-                    # find max length of column
-                    column_len = df[col].astype(str).str.len().max()
-                    column_len = max(column_len, len(col)) + 2
-                    worksheet.column_dimensions[chr(65+i)].width = column_len
+                ws = writer.book.create_sheet("סיכום")
+                writer.sheets["סיכום"] = ws
+
+                # Hebrew headers (skip "Delivery Area" column — it becomes the group header row)
+                data_cols = ["Product", "Total Quantity", "Order Count", "Order Numbers"]
+                heb_headers = [col_heb[c] for c in data_cols]
+                for col_idx, header in enumerate(heb_headers, start=1):
+                    cell = ws.cell(row=1, column=col_idx, value=header)
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal='center')
+
+                header_fill = PatternFill(fill_type="solid", fgColor="1F4E79")  # dark blue
+                area_fill   = PatternFill(fill_type="solid", fgColor="D0E8FF")  # light blue
+
+                current_row = 2
+                areas = {}
+                for row in self.current_summary_data:
+                    areas.setdefault(row["Delivery Area"], []).append(row)
+
+                for area, rows in areas.items():
+                    # Area header row
+                    area_row = current_row
+                    area_cell = ws.cell(row=area_row, column=1, value=area)
+                    area_cell.font = Font(bold=True, color="FFFFFF")
+                    for c in range(1, len(data_cols) + 1):
+                        ws.cell(row=area_row, column=c).fill = header_fill
+                    total_qty   = sum(r["Total Quantity"] for r in rows)
+                    total_orders = sum(r["Order Count"] for r in rows)
+                    ws.cell(row=area_row, column=2, value=total_qty).font   = Font(bold=True, color="FFFFFF")
+                    ws.cell(row=area_row, column=3, value=total_orders).font = Font(bold=True, color="FFFFFF")
+                    current_row += 1
+
+                    # Product rows
+                    first_product_row = current_row
+                    for r in rows:
+                        ws.cell(row=current_row, column=1, value=r["Product"])
+                        ws.cell(row=current_row, column=2, value=r["Total Quantity"])
+                        ws.cell(row=current_row, column=3, value=r["Order Count"])
+                        ws.cell(row=current_row, column=4, value=r["Order Numbers"])
+                        for c in range(1, len(data_cols) + 1):
+                            ws.cell(row=current_row, column=c).fill = area_fill
+                        current_row += 1
+
+                    # Group product rows under the area header (outline level 1)
+                    for r in range(first_product_row, current_row):
+                        ws.row_dimensions[r].outline_level = 1
+                        ws.row_dimensions[r].hidden = False
+
+                # Collapse direction: summary row above detail rows
+                ws.sheet_properties.outlinePr.summaryBelow = False
+
+                # Auto-adjust column widths
+                for col_idx, col_key in enumerate(data_cols, start=1):
+                    col_letter = get_column_letter(col_idx)
+                    max_len = max(
+                        (len(str(r.get(col_key, ""))) for r in self.current_summary_data),
+                        default=0
+                    )
+                    max_len = max(max_len, len(heb_headers[col_idx - 1])) + 3
+                    ws.column_dimensions[col_letter].width = max_len
             
             messagebox.showinfo("הצלחה", f"הקובץ נשמר בהצלחה:\n{file_path}")
             

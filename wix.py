@@ -485,6 +485,22 @@ class WixInventoryManager:
             print(f"Error fetching orders: {e}")
             return None
 
+    def get_order_ecom(self, order_id):
+        """
+        Retrieves a single order via the eCommerce v1 API, which includes
+        extendedFields (e.g. 'בחר איזור למשלוח' stored in
+        extendedFields.namespaces._user_fields.form_field_1).
+        """
+        url = f"https://www.wixapis.com/ecom/v1/orders/{order_id}"
+        try:
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            data = response.json()
+            return data.get('order', data)
+        except Exception as e:
+            print(f"Error fetching ecom order {order_id}: {e}")
+            return None
+
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
