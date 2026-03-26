@@ -450,9 +450,9 @@ class WixInventoryManager:
             print(f"Error fetching customers: {e}")
             return None
 
-    def get_orders(self, customer_id=None, limit=50, offset=0):
+    def get_orders(self, customer_id=None, limit=50, offset=0, fulfillment_status=None):
         """
-        Retrieves orders, optionally filtered by customer ID.
+        Retrieves orders, optionally filtered by customer ID or fulfillment status.
         """
         url = "https://www.wixapis.com/stores/v2/orders/query"
         
@@ -466,11 +466,17 @@ class WixInventoryManager:
             }
         }
         
+        filters = {}
         if customer_id:
-             filter_json = {"buyerInfo.contactId": {"$eq": customer_id}}
-             payload["query"]["filter"] = json.dumps(filter_json)
+             filters["buyerInfo.contactId"] = {"$eq": customer_id}
+        
+        if fulfillment_status:
+             filters["fulfillmentStatus"] = {"$eq": fulfillment_status}
 
-        print(f"Fetching orders (customer_id={customer_id}, offset={offset})...")
+        if filters:
+             payload["query"]["filter"] = json.dumps(filters)
+
+        print(f"Fetching orders (customer_id={customer_id}, fulfillment={fulfillment_status}, offset={offset})...")
         try:
             response = requests.post(url, headers=self.headers, json=payload)
             response.raise_for_status()

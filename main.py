@@ -130,6 +130,7 @@ class FlowerApp:
         self.create_global_pricing_tab()
         self.create_wix_categories_tab()
         self.create_customers_tab()
+        self.create_wix_orders_summary_tab()
         
         # if self.drive_sync:
         #     self.perform_startup_sync()
@@ -3896,6 +3897,190 @@ del "%~f0" & exit
                 self.root.after(0, lambda d=date_str, n=number, t=total, s=status, ci=source_cid: tree.insert("", "end", values=(d, n, t, s, ci)))
         
         threading.Thread(target=fetch, daemon=True).start()
+
+    def create_wix_orders_summary_tab(self):
+        self.wix_summary_tab = ttk.Frame(self.right_notebook)
+        self.right_notebook.add(self.wix_summary_tab, text="סיכום הזמנות", compound='left')
+        
+        # Toolbar
+        toolbar = ttk.Frame(self.wix_summary_tab)
+        toolbar.pack(fill='x', padx=5, pady=5)
+        ttk.Button(toolbar, text="הצג סיכום לביצוע", command=self.load_unfulfilled_summary).pack(side='right')
+        ttk.Button(toolbar, text="ייצוא לאקסל", command=self.export_summary_to_excel).pack(side='left')
+
+        # Treeview for results (Product, Quantity, Order Count)
+        columns = ("product", "quantity", "orders_count")
+        self.summary_tree = ttk.Treeview(self.wix_summary_tab, columns=columns, show="headings", height=20)
+        self.summary_tree.heading("product", text="מוצר")
+        self.summary_tree.heading("quantity", text="כמות כוללת")
+        self.summary_tree.heading("orders_count", text="מס' הזמנות")
+        
+        self.summary_tree.column("product", anchor="e", width=250)
+        self.summary_tree.column("quantity", anchor="center", width=100)
+        self.summary_tree.column("orders_count", anchor="center", width=100)
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(self.wix_summary_tab, orient="vertical", command=self.summary_tree.yview)
+        self.summary_tree.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side="right", fill="y")
+        self.summary_tree.pack(fill="both", expand=True)
+
+    def load_unfulfilled_summary(self):
+        # Clear existing
+        try:
+            for item in self.summary_tree.get_children():
+                self.summary_tree.delete(item)
+        except Exception:
+            pass 
+            
+        # Get Wix manager
+        try:
+            with open("wix_token.json", "r") as f:
+                token_data = json.load(f)
+                api_key = token_data.get("api_key")
+        except Exception:
+            messagebox.showerror("שגיאה", "לא נמצא קובץ wix_token.json")
+            return
+
+        site_id = "3caddb6d-3f3e-4c84-b064-c6c03b8fe65e"
+        account_id = "e4f8bee0-0c16-4df9-b022-6cc29e961c9e"
+        
+        manager = WixInventoryManager(api_key, site_id, account_id)
+        
+        # Show loading indicator
+        self.summary_tree.insert("", "end", values=("טוען נתונים...", "", ""), tags=('loading',))
+        
+        self.current_summary_data = [] # Store for export
+        
+        def fetch_thread():
+            error_msg = None
+            product_summary = {}
+            
+            try:
+                all_orders = []
+                offset = 0
+                batch_size = 50 
+                
+                while True:
+                    data = manager.get_orders(limit=batch_size, offset=offset, fulfillment_status="NOT_FULFILLED")
+                    if not data:
+                        break
+                        
+                    orders_batch = data.get('orders', [])
+                    if not orders_batch:
+                        break
+                        
+                    all_orders.extend(orders_batch)
+                    
+                    if len(orders_batch) < batch_size:
+                        break # End of list
+                        
+                    offset += len(orders_batch)
+
+                # Process Data
+                for order in all_orders:
+                    order_number = order.get('number', 'Unknown')
+                    line_items = order.get('lineItems', [])
+                    for item in line_items:
+                        raw_name = item.get('name', 'Unknown')
+                        if isinstance(raw_name, dict):
+                            # Handle translated names or complex objects
+                            name = raw_name.get('translated', str(raw_name))
+                        else:
+                            name = str(raw_name) if raw_name else "Unknown"
+                            
+                        qty = item.get('quantity', 0)
+                        
+                        if name not in product_summary:
+                            product_summary[name] = {'qty': 0, 'orders': set()}
+                        
+                        product_summary[name]['qty'] += qty
+                        product_summary[name]['orders'].add(order_number)
+
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Error fetching summary: {e}")
+
+            def update_ui():
+                # Clear loading
+                for item in self.summary_tree.get_children():
+                    self.summary_tree.delete(item)
+                    
+                if error_msg:
+                    messagebox.showerror("שגיאה", f"נכשל במשיכת נתונים: {error_msg}")
+                    return
+                    
+                sorted_items = sorted(product_summary.items(), key=lambda x: x[0])
+                self.current_summary_data = []
+                for name, data in sorted_items:
+                    self.current_summary_data.append({
+                        "Product": name,
+                        "Total Quantity": data['qty'],
+                        "Order Count": len(data['orders']),
+                        "Order Numbers": ", ".join(sorted(list(data['orders'])))
+                    })
+                    self.summary_tree.insert("", "end", values=(name, data['qty'], len(data['orders'])))
+                
+                if not sorted_items:
+                     # Just an empty list is fine
+                     pass 
+
+            self.root.after(0, update_ui)
+
+        threading.Thread(target=fetch_thread, daemon=True).start()
+
+    def export_summary_to_excel(self):
+        # Check if data exists
+        if not hasattr(self, 'current_summary_data') or not self.current_summary_data:
+            messagebox.showinfo("ייצוא", "אין נתונים לייצוא. אנא טען נתונים.")
+            return
+
+        # Ask for filename
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="שמור סיכום הזמנות"
+        )
+        
+        if not file_path:
+            return
+
+        try:
+            # Create DataFrame
+            df = pd.DataFrame(self.current_summary_data)
+            
+            # Translate Headers for the Excel file
+            column_mapping = {
+                "Product": "שם המוצר",
+                "Total Quantity": "כמות כוללת",
+                "Order Count": "מספר הזמנות",
+                "Order Numbers": "מספרי הזמנות"
+            }
+            df = df.rename(columns=column_mapping)
+            
+            # Write to Excel
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name="סיכום")
+                
+                # Auto-adjust columns
+                worksheet = writer.sheets['סיכום']
+                for i, col in enumerate(df.columns):
+                    # find max length of column
+                    column_len = df[col].astype(str).str.len().max()
+                    column_len = max(column_len, len(col)) + 2
+                    worksheet.column_dimensions[chr(65+i)].width = column_len
+            
+            messagebox.showinfo("הצלחה", f"הקובץ נשמר בהצלחה:\n{file_path}")
+            
+            # Open file location
+            try:
+                subprocess.Popen(f'explorer /select,"{os.path.normpath(file_path)}"')
+            except:
+                pass
+
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"תקלה בשמירת הקובץ:\n{e}")
 
 def check_single_instance():
     try:
