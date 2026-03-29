@@ -4003,6 +4003,14 @@ del "%~f0" & exit
                             name = raw_name.get('translated', str(raw_name))
                         else:
                             name = str(raw_name) if raw_name else "Unknown"
+
+                        # Build variant string from options list
+                        options = item.get('options', [])
+                        if options:
+                            variant_parts = [opt.get('selection', '') for opt in options if opt.get('selection')]
+                            if variant_parts:
+                                name = f"{name} ({', '.join(variant_parts)})"
+
                         qty = item.get('quantity', 0)
 
                         if name not in area_summary[delivery_area]:
