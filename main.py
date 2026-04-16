@@ -316,8 +316,13 @@ class FlowerApp:
                 df_sorted = df.sort_values(by=["Flower Name", "Size"]).reset_index(drop=True)
                 existing_sorted = existing_df.sort_values(by=["Flower Name", "Size"]).reset_index(drop=True)
                 
-                # Check if identical
-                # We use a small tolerance for floats if needed, but usually exact match works for prices
+                # Ensure consistent dtypes before comparison (read_excel may load ints vs floats)
+                for col in ["Flower Name", "Size"]:
+                    df_sorted[col] = df_sorted[col].astype(str)
+                    existing_sorted[col] = existing_sorted[col].astype(str)
+                df_sorted["Price"] = df_sorted["Price"].astype(float)
+                existing_sorted["Price"] = existing_sorted["Price"].astype(float)
+                
                 if df_sorted.equals(existing_sorted):
                     return
             except Exception:
@@ -3909,16 +3914,18 @@ del "%~f0" & exit
         ttk.Button(toolbar, text="ייצוא לאקסל", command=self.export_summary_to_excel).pack(side='left')
 
         # Treeview: tree column holds product name (with area as parent row),
-        # plus quantity and order count columns
-        columns = ("quantity", "orders_count")
+        # plus quantity, order count, and customer names columns
+        columns = ("quantity", "orders_count", "customer_names")
         self.summary_tree = ttk.Treeview(self.wix_summary_tab, columns=columns, show="tree headings", height=20)
         self.summary_tree.heading("#0", text="מוצר / אזור משלוח")
         self.summary_tree.heading("quantity", text="כמות כוללת")
         self.summary_tree.heading("orders_count", text="מס' הזמנות")
+        self.summary_tree.heading("customer_names", text="של לקוח")
         
         self.summary_tree.column("#0", anchor="e", width=300, stretch=True)
         self.summary_tree.column("quantity", anchor="center", width=110)
         self.summary_tree.column("orders_count", anchor="center", width=110)
+        self.summary_tree.column("customer_names", anchor="e", width=200)
         
         # Scrollbar
         scrollbar = ttk.Scrollbar(self.wix_summary_tab, orient="vertical", command=self.summary_tree.yview)
@@ -3950,13 +3957,13 @@ del "%~f0" & exit
         manager = WixInventoryManager(api_key, site_id, account_id)
         
         # Show loading indicator
-        self.summary_tree.insert("", "end", text="טוען נתונים...", values=("", ""), tags=('loading',))
+        self.summary_tree.insert("", "end", text="טוען נתונים...", values=("", "", ""), tags=('loading',))
         
         self.current_summary_data = [] # Store for export
         
         def fetch_thread():
             error_msg = None
-            # area_summary: { area -> { product_name -> {'qty': int, 'orders': set} } }
+            # area_summary: { area -> { product_name -> {'qty': int, 'orders': set, 'customers': set} } }
             area_summary = {}
             
             try:
@@ -3980,6 +3987,12 @@ del "%~f0" & exit
                 for order in all_orders:
                     order_number = str(order.get('number', 'Unknown'))
                     order_id = order.get('id', '')
+
+                    # Extract customer name from buyer info
+                    buyer = order.get('buyerInfo', {})
+                    customer_first = buyer.get('firstName', '')
+                    customer_last = buyer.get('lastName', '')
+                    customer_name = f"{customer_first} {customer_last}".strip()
 
                     delivery_area = "לא ידוע"
                     if order_id:
@@ -4014,9 +4027,11 @@ del "%~f0" & exit
                         qty = item.get('quantity', 0)
 
                         if name not in area_summary[delivery_area]:
-                            area_summary[delivery_area][name] = {'qty': 0, 'orders': set()}
+                            area_summary[delivery_area][name] = {'qty': 0, 'orders': set(), 'customers': set()}
                         area_summary[delivery_area][name]['qty'] += qty
                         area_summary[delivery_area][name]['orders'].add(order_number)
+                        if customer_name:
+                            area_summary[delivery_area][name]['customers'].add(customer_name)
 
             except Exception as e:
                 error_msg = str(e)
@@ -4041,23 +4056,25 @@ del "%~f0" & exit
                     area_node = self.summary_tree.insert(
                         "", "end",
                         text=f"  {area}",
-                        values=(area_total_qty, area_order_count),
+                        values=(area_total_qty, area_order_count, ""),
                         open=True,
                         tags=('area_header',)
                     )
                     for name in sorted(products.keys()):
                         pdata = products[name]
+                        customers_str = ", ".join(sorted(pdata['customers']))
                         self.current_summary_data.append({
                             "Delivery Area": area,
                             "Product": name,
                             "Total Quantity": pdata['qty'],
                             "Order Count": len(pdata['orders']),
-                            "Order Numbers": ", ".join(sorted(pdata['orders']))
+                            "Order Numbers": ", ".join(sorted(pdata['orders'])),
+                            "Customer Names": customers_str
                         })
                         self.summary_tree.insert(
                             area_node, "end",
                             text=f"    {name}",
-                            values=(pdata['qty'], len(pdata['orders']))
+                            values=(pdata['qty'], len(pdata['orders']), customers_str)
                         )
 
                 # Style area header rows bold-ish via tag
@@ -4097,7 +4114,8 @@ del "%~f0" & exit
                 "Product": "שם המוצר",
                 "Total Quantity": "כמות כוללת",
                 "Order Count": "מספר הזמנות",
-                "Order Numbers": "מספרי הזמנות"
+                "Order Numbers": "מספרי הזמנות",
+                "Customer Names": "של לקוח"
             }
 
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -4105,7 +4123,7 @@ del "%~f0" & exit
                 writer.sheets["סיכום"] = ws
 
                 # Hebrew headers (skip "Delivery Area" column — it becomes the group header row)
-                data_cols = ["Product", "Total Quantity", "Order Count", "Order Numbers"]
+                data_cols = ["Product", "Total Quantity", "Order Count", "Customer Names", "Order Numbers"]
                 heb_headers = [col_heb[c] for c in data_cols]
                 for col_idx, header in enumerate(heb_headers, start=1):
                     cell = ws.cell(row=1, column=col_idx, value=header)
@@ -4139,7 +4157,8 @@ del "%~f0" & exit
                         ws.cell(row=current_row, column=1, value=r["Product"])
                         ws.cell(row=current_row, column=2, value=r["Total Quantity"])
                         ws.cell(row=current_row, column=3, value=r["Order Count"])
-                        ws.cell(row=current_row, column=4, value=r["Order Numbers"])
+                        ws.cell(row=current_row, column=4, value=r["Customer Names"])
+                        ws.cell(row=current_row, column=5, value=r["Order Numbers"])
                         for c in range(1, len(data_cols) + 1):
                             ws.cell(row=current_row, column=c).fill = area_fill
                         current_row += 1
